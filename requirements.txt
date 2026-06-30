@@ -1,0 +1,13 @@
+pandas
+openpyxl
+xlrd
+pymupdf
+python-dotenv
+tqdm
+streamlit
+matplotlib
+wordcloud
+networkx
+openai
+google-genai
+pytest
