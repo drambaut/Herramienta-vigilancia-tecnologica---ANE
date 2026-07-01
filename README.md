@@ -137,6 +137,31 @@ python app/llm_extract.py --limit 50 --max-chars 12000
 
 Esta fase puede consumir cuota o generar costos en el proveedor configurado.
 
+## Procesamiento incremental con Gemini
+
+La extracción puede limitarse a una cantidad de documentos, continuar desde
+los resultados correctos existentes o regenerarse explícitamente:
+
+```powershell
+python app/llm_extract.py --limit 20
+python app/llm_extract.py --limit 50 --resume
+python app/llm_extract.py --limit 100 --resume
+python app/llm_extract.py --limit all --resume
+python app/llm_extract.py --limit all --overwrite
+```
+
+`--resume` procesa documentos pendientes y conserva el consolidado anterior.
+`--overwrite` inicia desde cero. Sin ninguna de estas opciones, un archivo
+`structured_documents.csv` existente no se sobrescribe.
+
+Después de ampliar el conjunto procesado, actualice los archivos publicables:
+
+```powershell
+python app/dashboard_data_builder.py
+```
+
+Esto regenera los CSV analíticos y actualiza `demo_data/`.
+
 ## Análisis de resultados LLM
 
 Después de generar `structured_documents.csv`:
@@ -157,7 +182,39 @@ El dashboard presenta métricas, filtros, tendencias, detalle documental y los
 reportes Markdown. Si falta algún resultado, muestra una advertencia sin
 interrumpir las demás secciones.
 
-## Archivos generados
+## Modo demo con demo_data
+
+El pipeline se ejecuta localmente. Después de generar
+`outputs/structured_data/structured_documents.csv`, la capa analítica se crea con:
+
+```powershell
+python app/dashboard_data_builder.py
+```
+
+Los CSV limpios y agregados para publicación se copian a `demo_data/`. Render
+leerá esta carpeta versionable sin depender de los PDF originales, textos
+extraídos, Gemini ni una base de datos durante la demo. No se suben documentos
+originales, archivos intermedios, logs ni claves API. La conexión a Supabase
+queda aplazada para una fase posterior.
+
+> Mejora futura: conexión a Supabase u otra base de datos para persistencia y
+> actualización dinámica del dashboard.
+
+## Dashboard rediseñado
+
+El dashboard ejecutivo lee exclusivamente los archivos procesados de
+demostración incluidos en `demo_data/`. Se inicia con:
+
+```powershell
+streamlit run app/dashboard.py
+```
+
+Para actualizar la publicación, ejecute localmente
+`python app/dashboard_data_builder.py` y luego haga commit de los CSV renovados
+en `demo_data/`. El dashboard publicado no requiere los documentos originales,
+las salidas locales del pipeline, claves API ni una base de datos.
+
+## Archivos generados localmente
 
 Los principales resultados locales se guardan en:
 

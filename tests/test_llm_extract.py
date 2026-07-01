@@ -167,3 +167,113 @@ def test_cli_arguments_accept_custom_values() -> None:
 
     assert args.limit == 50
     assert args.max_chars == 9000
+
+
+def _previous_record(document_id: str, status: str = "ok") -> dict:
+    return {
+        "document_id": document_id,
+        "file_name": f"{document_id}.pdf",
+        "source_folder": "Fuente previa",
+        "file_type": "pdf",
+        **VALID_EXTRACTION,
+        "llm_status": status,
+        "llm_error": "" if status == "ok" else "error previo",
+    }
+
+
+def test_cli_accepts_all_resume_and_overwrite() -> None:
+    resume_args = llm_module._parse_args(["--limit", "all", "--resume"])
+    overwrite_args = llm_module._parse_args(["--limit", "100", "--overwrite"])
+
+    assert resume_args.limit is None and resume_args.resume is True
+    assert resume_args.overwrite is False
+    assert overwrite_args.limit == 100 and overwrite_args.overwrite is True
+
+
+def test_existing_final_is_protected_without_explicit_mode(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _patch_paths(tmp_path, monkeypatch)
+    existing = llm_module._save_results(
+        [_previous_record("doc-1")], llm_module.FINAL_CSV
+    )
+    monkeypatch.setattr(llm_module, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(
+        llm_module,
+        "call_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("no debe llamarse")),
+    )
+
+    result = llm_module.run_llm_extraction(limit=50)
+
+    assert len(result) == len(existing) == 1
+    assert "Usa --resume para continuar o --overwrite para regenerar" in capsys.readouterr().out
+
+
+def test_resume_skips_previous_ok_and_consolidates_partial(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    _patch_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr(llm_module, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm_module, "GEMINI_API_KEY", "fake-key")
+    llm_module._save_results([_previous_record("doc-1")], llm_module.FINAL_CSV)
+    calls: list[str] = []
+
+    def fake_call(prompt: str, document_text: str) -> dict:
+        calls.append(document_text)
+        return VALID_EXTRACTION
+
+    monkeypatch.setattr(llm_module, "call_llm", fake_call)
+
+    result = llm_module.run_llm_extraction(limit=1, resume=True)
+    partial = pd.read_csv(llm_module.PARTIAL_CSV, encoding="utf-8-sig")
+
+    assert len(calls) == 1 and calls[0] == "Texto dos"
+    assert set(result["document_id"]) == {"doc-1", "doc-2"}
+    assert result["document_id"].is_unique
+    assert len(partial) == 2
+    assert json.loads(result.loc[result["document_id"] == "doc-1", "tecnologias"].iloc[0]) == ["5G"]
+    output = capsys.readouterr().out
+    assert "Documentos ya procesados previamente: 1" in output
+    assert "Documentos seleccionados para esta corrida: 1" in output
+    assert "Total final en structured_documents.csv: 2" in output
+
+
+def test_resume_retries_errors_and_ok_wins_deduplication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr(llm_module, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm_module, "GEMINI_API_KEY", "fake-key")
+    llm_module._save_results([_previous_record("doc-1", "error")], llm_module.FINAL_CSV)
+    calls: list[str] = []
+
+    def fake_call(**kwargs) -> dict:
+        calls.append(kwargs["document_text"])
+        return VALID_EXTRACTION
+
+    monkeypatch.setattr(llm_module, "call_llm", fake_call)
+
+    result = llm_module.run_llm_extraction(limit=None, resume=True)
+
+    assert len(calls) == 2
+    assert result["document_id"].is_unique
+    assert set(result["document_id"]) == {"doc-1", "doc-2"}
+    assert result.loc[result["document_id"] == "doc-1", "llm_status"].iloc[0] == "ok"
+    deduplicated = llm_module._deduplicate_records(
+        [_previous_record("same", "ok"), _previous_record("same", "error")]
+    )
+    assert len(deduplicated) == 1 and deduplicated[0]["llm_status"] == "ok"
+
+
+def test_overwrite_ignores_previous_results(tmp_path: Path, monkeypatch) -> None:
+    _patch_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr(llm_module, "LLM_PROVIDER", "gemini")
+    monkeypatch.setattr(llm_module, "GEMINI_API_KEY", "fake-key")
+    llm_module._save_results([_previous_record("old-doc")], llm_module.FINAL_CSV)
+    monkeypatch.setattr(llm_module, "call_llm", lambda **kwargs: VALID_EXTRACTION)
+
+    result = llm_module.run_llm_extraction(limit=None, overwrite=True)
+
+    assert set(result["document_id"]) == {"doc-1", "doc-2"}
+    assert "old-doc" not in set(result["document_id"])

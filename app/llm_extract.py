@@ -256,6 +256,48 @@ def _serialize_record(record: dict[str, Any]) -> dict[str, Any]:
     return serialized
 
 
+def _parse_existing_list(value: Any) -> list[str]:
+    """Restaura listas JSON guardadas previamente sin doble serialización."""
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    try:
+        parsed = json.loads(str(value))
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _deduplicate_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Consolida document_id duplicados y conserva preferentemente filas correctas."""
+    consolidated: dict[str, dict[str, Any]] = {}
+    for record in records:
+        document_id = str(record.get("document_id", "")).strip()
+        if not document_id:
+            continue
+        current = consolidated.get(document_id)
+        incoming_ok = str(record.get("llm_status", "")).casefold() == "ok"
+        current_ok = bool(current) and str(current.get("llm_status", "")).casefold() == "ok"
+        if current is None or incoming_ok or not current_ok:
+            consolidated[document_id] = record
+    return list(consolidated.values())
+
+
+def _load_existing_records(path: Path) -> list[dict[str, Any]]:
+    """Carga el consolidado previo en la representación interna del proceso."""
+    if not path.is_file():
+        return []
+    dataframe = pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
+    records: list[dict[str, Any]] = []
+    for raw in dataframe.to_dict(orient="records"):
+        record = {column: raw.get(column, "") for column in OUTPUT_COLUMNS}
+        for field in LIST_FIELDS:
+            record[field] = _parse_existing_list(record.get(field))
+        records.append(record)
+    return _deduplicate_records(records)
+
+
 def _save_results(records: list[dict[str, Any]], output_path: Path) -> pd.DataFrame:
     dataframe = pd.DataFrame(
         [_serialize_record(record) for record in records], columns=OUTPUT_COLUMNS
@@ -268,6 +310,8 @@ def _save_results(records: list[dict[str, Any]], output_path: Path) -> pd.DataFr
 def run_llm_extraction(
     limit: int | None = 20,
     max_chars: int = 12000,
+    resume: bool = False,
+    overwrite: bool = False,
 ) -> pd.DataFrame:
     """Extrae campos estructurados de las filas válidas del corpus.
 
@@ -278,9 +322,20 @@ def run_llm_extraction(
         raise ValueError("limit debe ser un entero no negativo o None.")
     if max_chars <= 0:
         raise ValueError("max_chars debe ser mayor que cero.")
+    if resume and overwrite:
+        raise ValueError("--resume y --overwrite no pueden usarse al mismo tiempo.")
 
     logger = _configure_logging()
     provider = LLM_PROVIDER.strip().lower()
+
+    if FINAL_CSV.is_file() and not resume and not overwrite:
+        message = (
+            "Ya existe structured_documents.csv. Usa --resume para continuar "
+            "o --overwrite para regenerar."
+        )
+        print(message)
+        logger.warning(message)
+        return pd.read_csv(FINAL_CSV, encoding="utf-8-sig")
 
     if provider not in {"gemini", "openai"}:
         message = (
@@ -310,22 +365,36 @@ def run_llm_extraction(
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
     dataframe, prompt = _load_inputs()
-    candidates = dataframe.loc[dataframe["status"].str.lower() == "ok"].copy()
+    candidates = (
+        dataframe.loc[dataframe["status"].str.lower() == "ok"]
+        .drop_duplicates(subset="document_id", keep="first")
+        .copy()
+    )
+    previous_records = _load_existing_records(FINAL_CSV) if resume else []
+    previous_ok_ids = {
+        str(record["document_id"])
+        for record in previous_records
+        if str(record.get("llm_status", "")).casefold() == "ok"
+    }
+    pending = candidates.loc[~candidates["document_id"].isin(previous_ok_ids)].copy()
+    selected = pending
     if limit is not None:
-        candidates = candidates.head(limit)
+        selected = selected.head(limit)
 
     logger.info(
         "Inicio. provider=%s | model=%s | documentos=%d | max_chars=%d",
         provider,
         GEMINI_MODEL if provider == "gemini" else OPENAI_MODEL,
-        len(candidates),
+        len(selected),
         max_chars,
     )
-    records: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = list(previous_records)
+    run_records: list[dict[str, Any]] = []
+    _save_results(records, PARTIAL_CSV)
 
     for row in tqdm(
-        candidates.itertuples(index=False),
-        total=len(candidates),
+        selected.itertuples(index=False),
+        total=len(selected),
         desc="Extracción con LLM",
         unit="documento",
     ):
@@ -357,18 +426,52 @@ def run_llm_extraction(
             }
             logger.error("Error en %s | %s", row.document_id, error)
 
-        records.append(record)
+        run_records.append(record)
+        records = _deduplicate_records(records + [record])
         _save_results(records, PARTIAL_CSV)
 
+    records = _deduplicate_records(records)
     result = _save_results(records, FINAL_CSV)
-    errors = int((result["llm_status"] == "error").sum()) if not result.empty else 0
-    logger.info("Fin. procesados=%d | errores=%d | salida=%s", len(result), errors, FINAL_CSV)
+    run_successes = sum(
+        str(record.get("llm_status", "")).casefold() == "ok"
+        for record in run_records
+    )
+    run_errors = len(run_records) - run_successes
+    logger.info(
+        "Fin. nuevos=%d | errores=%d | total=%d | salida=%s",
+        run_successes,
+        run_errors,
+        len(result),
+        FINAL_CSV,
+    )
 
     print("\nExtracción estructurada finalizada")
-    print(f"- Documentos procesados: {len(result)}")
-    print(f"- Errores: {errors}")
-    print(f"- Archivo final: {FINAL_CSV}")
+    print(f"- Documentos disponibles en document_texts.csv: {len(dataframe)}")
+    print(f"- Documentos ya procesados previamente: {len(previous_ok_ids)}")
+    print(f"- Documentos pendientes: {len(pending)}")
+    print(f"- Documentos seleccionados para esta corrida: {len(selected)}")
+    print(f"- Documentos procesados exitosamente en esta corrida: {run_successes}")
+    print(f"- Errores en esta corrida: {run_errors}")
+    print(f"- Total final en structured_documents.csv: {len(result)}")
+    print(f"- Ruta del archivo final: {FINAL_CSV}")
     return result
+
+
+def _parse_limit(value: str) -> int | None:
+    """Acepta un entero no negativo o la palabra ``all``."""
+    if value.casefold() == "all":
+        return None
+    try:
+        limit = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--limit debe ser un entero no negativo o 'all'."
+        ) from exc
+    if limit < 0:
+        raise argparse.ArgumentTypeError(
+            "--limit debe ser un entero no negativo o 'all'."
+        )
+    return limit
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -378,7 +481,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--limit",
-        type=int,
+        type=_parse_limit,
         default=20,
         help="Número máximo de documentos por procesar (predeterminado: 20).",
     )
@@ -388,13 +491,29 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=12000,
         help="Máximo de caracteres enviados por documento (predeterminado: 12000).",
     )
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--resume",
+        action="store_true",
+        help="ContinÃºa pendientes y conserva resultados anteriores.",
+    )
+    modes.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Ignora resultados anteriores y regenera el archivo final.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> pd.DataFrame:
     """Punto de entrada para la ejecución desde consola."""
     args = _parse_args(argv)
-    return run_llm_extraction(limit=args.limit, max_chars=args.max_chars)
+    return run_llm_extraction(
+        limit=args.limit,
+        max_chars=args.max_chars,
+        resume=args.resume,
+        overwrite=args.overwrite,
+    )
 
 
 if __name__ == "__main__":

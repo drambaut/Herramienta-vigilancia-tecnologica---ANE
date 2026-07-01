@@ -6,6 +6,7 @@ python-dotenv
 tqdm
 streamlit
 matplotlib
+plotly
 wordcloud
 networkx
 openai

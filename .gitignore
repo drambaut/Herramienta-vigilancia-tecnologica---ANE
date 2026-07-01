@@ -22,6 +22,8 @@ outputs/**
 *.xlsx
 *.xls
 *.csv
+!demo_data/
+!demo_data/*.csv
 *.pkl
 *.log
 
