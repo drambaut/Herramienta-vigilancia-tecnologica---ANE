@@ -9,15 +9,15 @@ import pandas as pd
 
 try:
     from app.config import PROJECT_ROOT, STRUCTURED_DATA_DIR
-    from app.topic_taxonomy import infer_tema_estrategico, infer_tipo_evento_regulatorio, map_tema_to_linea_pmge, normalize_bands, normalize_technologies, parse_list_field
+    from app.topic_taxonomy import infer_regulatory_subtopic, infer_tema_estrategico, infer_tipo_evento_regulatorio, map_tema_to_linea_pmge, normalize_bands, normalize_technologies, parse_list_field, regulatory_profile
 except ModuleNotFoundError:  # Ejecución directa: python app/dashboard_data_builder.py
     from config import PROJECT_ROOT, STRUCTURED_DATA_DIR
-    from topic_taxonomy import infer_tema_estrategico, infer_tipo_evento_regulatorio, map_tema_to_linea_pmge, normalize_bands, normalize_technologies, parse_list_field
+    from topic_taxonomy import infer_regulatory_subtopic, infer_tema_estrategico, infer_tipo_evento_regulatorio, map_tema_to_linea_pmge, normalize_bands, normalize_technologies, parse_list_field, regulatory_profile
 
 LOGGER = logging.getLogger(__name__)
 INPUT_CSV = STRUCTURED_DATA_DIR / "structured_documents.csv"
 DEMO_DATA_DIR = PROJECT_ROOT / "demo_data"
-OUTPUT_NAMES = ["dashboard_records.csv", "dashboard_signals.csv", "dashboard_temas_counts.csv", "dashboard_relevancia_counts.csv", "dashboard_tipo_insumo_counts.csv", "dashboard_tecnologias_counts.csv", "dashboard_bandas_counts.csv", "dashboard_tema_fuente_matrix.csv", "dashboard_tema_tecnologia_matrix.csv", "dashboard_banda_tecnologia_matrix.csv", "dashboard_tema_tipo_insumo_matrix.csv", "dashboard_tema_relevancia_matrix.csv"]
+OUTPUT_NAMES = ["dashboard_records.csv", "dashboard_signals.csv", "dashboard_temas_counts.csv", "dashboard_relevancia_counts.csv", "dashboard_tipo_insumo_counts.csv", "dashboard_tecnologias_counts.csv", "dashboard_bandas_counts.csv", "dashboard_tema_fuente_matrix.csv", "dashboard_tema_tecnologia_matrix.csv", "dashboard_banda_tecnologia_matrix.csv", "dashboard_tema_tipo_insumo_matrix.csv", "dashboard_tema_relevancia_matrix.csv", "dashboard_regulatory_map.csv", "dashboard_regulatory_trends.csv"]
 INTERNATIONAL_SOURCES = ("cullen international", "policytracker", "gsma", "worldbank", "world bank", "reguladores", "uit", "citel", "itu")
 
 def _text(row: pd.Series, column: str) -> str:
@@ -104,6 +104,97 @@ def _build_signals(records: pd.DataFrame) -> pd.DataFrame:
     signals["prioridad_score"] = (signals["relevancia_score_promedio"] + signals["actividad_score_promedio"]).round(2)
     return signals.sort_values("prioridad_score", ascending=False)
 
+
+def _score_label(score: float) -> str:
+    return "Baja" if score <= 3 else "Media" if score <= 6 else "Alta"
+
+
+def _principal_value(frame: pd.DataFrame, column: str) -> str:
+    if frame.empty or column not in frame.columns:
+        return "Sin datos"
+    values = frame[column].fillna("").astype(str).str.strip()
+    values = values[values.ne("")]
+    return str(values.value_counts().index[0]) if not values.empty else "Sin datos"
+
+
+def build_regulatory_map(records: pd.DataFrame) -> pd.DataFrame:
+    """Agrega la lectura regulatoria a partir de registros procesados (sin LLM)."""
+    columns = [
+        "tema_macro", "subtema", "debate_regulatorio", "implicacion_regulatoria",
+        "tipo_insumo_agenda", "relevancia_label", "relevancia_score_promedio",
+        "num_documentos", "num_senales",
+    ]
+    if records.empty:
+        return pd.DataFrame(columns=columns)
+    rows: list[dict[str, Any]] = []
+    for _, row in records.iterrows():
+        topic = _text(row, "tema_estrategico") or "Otros temas de seguimiento"
+        profile = regulatory_profile(topic)
+        rows.append({
+            "document_id": _text(row, "document_id"),
+            "senal_regulatoria": _text(row, "senal_regulatoria"),
+            "tema_macro": topic,
+            "subtema": infer_regulatory_subtopic(
+                topic, row.get("tecnologias", []), row.get("bandas_frecuencia", []),
+                _text(row, "senal_regulatoria"),
+            ),
+            "debate_regulatorio": profile["debate"],
+            "implicacion_regulatoria": profile["implicacion"],
+            "tipo_insumo_agenda": _text(row, "tipo_insumo_agenda") or "Seguimiento",
+            "relevancia_label": _text(row, "relevancia_label") or "Baja",
+            "relevancia_score": pd.to_numeric(row.get("relevancia_score", 0), errors="coerce"),
+        })
+    working = pd.DataFrame(rows)
+    keys = [
+        "tema_macro", "subtema", "debate_regulatorio", "implicacion_regulatoria",
+        "tipo_insumo_agenda", "relevancia_label",
+    ]
+    result = working.groupby(keys, dropna=False).agg(
+        relevancia_score_promedio=("relevancia_score", "mean"),
+        num_documentos=("document_id", "nunique"),
+        num_senales=("senal_regulatoria", "nunique"),
+    ).reset_index()
+    result["relevancia_score_promedio"] = result["relevancia_score_promedio"].fillna(0).round(2)
+    return result[columns].sort_values(
+        ["num_documentos", "relevancia_score_promedio"], ascending=False
+    ).reset_index(drop=True)
+
+
+def build_regulatory_trends(records: pd.DataFrame) -> pd.DataFrame:
+    """Produce exactamente una tendencia explicada por cada tema macro presente."""
+    columns = [
+        "tema_macro", "nombre_tendencia", "tema_asociado", "de_que_trata",
+        "que_esta_pasando", "por_que_importa", "implicacion_regulatoria",
+        "relevancia_label", "relevancia_score_promedio", "tipo_insumo_principal",
+        "num_documentos", "num_senales",
+    ]
+    if records.empty:
+        return pd.DataFrame(columns=columns)
+    document_column = "document_id" if "document_id" in records.columns else "tema_estrategico"
+    rows: list[dict[str, Any]] = []
+    for topic, group in records.groupby("tema_estrategico", dropna=False):
+        topic = str(topic).strip() or "Otros temas de seguimiento"
+        profile = regulatory_profile(topic)
+        scores = pd.to_numeric(group.get("relevancia_score", pd.Series(index=group.index, dtype=float)), errors="coerce")
+        average = float(scores.mean()) if scores.notna().any() else 0.0
+        rows.append({
+            "tema_macro": topic,
+            "nombre_tendencia": profile["nombre"],
+            "tema_asociado": topic,
+            "de_que_trata": profile["trata"],
+            "que_esta_pasando": profile["pasando"],
+            "por_que_importa": profile["importa"],
+            "implicacion_regulatoria": profile["implicacion"],
+            "relevancia_label": _score_label(average),
+            "relevancia_score_promedio": round(average, 2),
+            "tipo_insumo_principal": _principal_value(group, "tipo_insumo_agenda"),
+            "num_documentos": int(group[document_column].nunique()),
+            "num_senales": int(group.get("senal_regulatoria", pd.Series(index=group.index, dtype=str)).nunique()),
+        })
+    return pd.DataFrame(rows, columns=columns).sort_values(
+        ["relevancia_score_promedio", "num_documentos"], ascending=False
+    ).reset_index(drop=True)
+
 def build_dashboard_data() -> dict[str, Any]:
     if not INPUT_CSV.exists(): raise FileNotFoundError(f"No existe {INPUT_CSV}. Primero ejecute: python app/llm_extract.py")
     STRUCTURED_DATA_DIR.mkdir(parents=True, exist_ok=True); DEMO_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,6 +208,8 @@ def build_dashboard_data() -> dict[str, Any]:
     matrices = [("tema_estrategico", "source_folder", OUTPUT_NAMES[7], False, False), ("tema_estrategico", "tecnologias", OUTPUT_NAMES[8], False, True), ("bandas_frecuencia", "tecnologias", OUTPUT_NAMES[9], True, True), ("tema_estrategico", "tipo_insumo_agenda", OUTPUT_NAMES[10], False, False), ("tema_estrategico", "relevancia_label", OUTPUT_NAMES[11], False, False)]
     for row_col, col_col, name, row_list, col_list in matrices: _write_matrix(records, row_col, col_col, STRUCTURED_DATA_DIR / name, row_list, col_list)
     signals = _build_signals(records); signals.to_csv(STRUCTURED_DATA_DIR / OUTPUT_NAMES[1], index=False, encoding="utf-8-sig")
+    build_regulatory_map(records).to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_map.csv", index=False, encoding="utf-8-sig")
+    build_regulatory_trends(records).to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_trends.csv", index=False, encoding="utf-8-sig")
     for name in OUTPUT_NAMES: shutil.copy2(STRUCTURED_DATA_DIR / name, DEMO_DATA_DIR / name)
     return {"records_processed": len(records), "strategic_topics": records["tema_estrategico"].nunique(), "signals_generated": len(signals), "files_copied": len(OUTPUT_NAMES), "demo_data_dir": DEMO_DATA_DIR}
 

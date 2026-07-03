@@ -17,6 +17,8 @@ import streamlit as st
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.dashboard_data_builder import build_regulatory_map, build_regulatory_trends
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEMO_DATA_DIR = PROJECT_ROOT / "demo_data"
 DEMO_FILES = [
@@ -25,7 +27,8 @@ DEMO_FILES = [
     "dashboard_tecnologias_counts.csv", "dashboard_bandas_counts.csv",
     "dashboard_tema_fuente_matrix.csv", "dashboard_tema_tecnologia_matrix.csv",
     "dashboard_banda_tecnologia_matrix.csv", "dashboard_tema_tipo_insumo_matrix.csv",
-    "dashboard_tema_relevancia_matrix.csv",
+    "dashboard_tema_relevancia_matrix.csv", "dashboard_regulatory_map.csv",
+    "dashboard_regulatory_trends.csv",
 ]
 LIST_COLUMNS = {
     "tecnologias", "bandas_frecuencia", "paises_regiones", "organizaciones",
@@ -145,10 +148,25 @@ h3 {{ font-size:.9rem !important; margin:.15rem 0 .65rem !important; }}
 .rel-hi {{ color:#1F9C5C; }} .rel-mid {{ color:#E08E29; }} .rel-low {{ color:#6b6f7b; }}
 .raw-footnote {{ color:var(--muted); font-size:.66rem; margin-top:.5rem; }}
 .raw-empty {{ border:1px solid var(--border); border-radius:10px; background:#fff; color:var(--muted); padding:1rem; font-size:.78rem; }}
+.reg-filterbar {{ margin:.45rem 0 .85rem; padding:.72rem .85rem .15rem; border:1px solid var(--border); border-radius:10px; background:#fafbfc; }}
+.reg-table-wrap {{ width:100%; overflow:auto; border:1px solid var(--border); border-radius:10px; background:#fff; }}
+.reg-table {{ width:100%; min-width:1080px; border-collapse:collapse; font-size:.73rem; }}
+.reg-table th {{ padding:.62rem .55rem; color:var(--muted); font-size:.62rem; letter-spacing:.04em; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; }}
+.reg-table td {{ padding:.68rem .55rem; color:#31333F; border-bottom:1px solid #f0f1f3; vertical-align:top; line-height:1.35; }}
+.reg-table tr:last-child td {{ border-bottom:0; }}
+.two-line {{ display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; max-width:310px; }}
+.topic-badge {{ display:inline-block; border-radius:999px; padding:.2rem .48rem; background:#f0f2f6; color:#525762; font-size:.64rem; font-weight:700; }}
+.trend-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin-top:.7rem; }}
+.trend-card {{ border:1px solid var(--border); border-radius:10px; background:#fff; padding:1rem 1.05rem; min-width:0; }}
+.trend-card h4 {{ margin:.45rem 0 .75rem; color:#31333F; font-size:.96rem; line-height:1.25; }}
+.trend-topic {{ margin-bottom:.35rem; }}
+.trend-field {{ margin:.62rem 0; color:#4A4F5A; font-size:.75rem; line-height:1.42; }}
+.trend-field b {{ display:block; margin-bottom:.12rem; color:#31333F; font-size:.7rem; }}
+.trend-footer {{ display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.8rem; padding-top:.7rem; border-top:1px solid #f0f1f3; }}
 @media (max-width:700px) {{ .insumo-mini-row {{ align-items:flex-start; display:grid; grid-template-columns:1fr 42px; gap:.35rem .5rem; }} .insumo-mini-label {{ width:100%; min-width:0; grid-column:1 / -1; }} .insumo-mini-scale {{ width:100%; }} .insumo-mini-total {{ width:42px; min-width:42px; }} }}
 div[data-testid="stBarChart"], div[data-testid="stVegaLiteChart"] {{ max-height:390px; }}
 @media (max-width:1200px) {{ .metric-grid {{ grid-template-columns:repeat(3,minmax(0,1fr)); }} .metric-grid.panorama-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
-@media (max-width:700px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .block-container {{ padding-top:1rem; }} }}
+@media (max-width:700px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .trend-grid {{ grid-template-columns:1fr; }} .block-container {{ padding-top:1rem; }} }}
 </style>
 """
 
@@ -644,6 +662,207 @@ def _render_signals(records: pd.DataFrame) -> None:
     render_signals_table(signals)
 
 
+def filter_regulatory_rows(
+    dataframe: pd.DataFrame, topic: str = "Todos", input_type: str = "Todos",
+    relevance: str = "Todas", input_column: str = "tipo_insumo_agenda",
+) -> pd.DataFrame:
+    """Aplica los tres filtros locales sin alterar el subconjunto global de origen."""
+    filtered = dataframe.copy()
+    if topic != "Todos" and "tema_macro" in filtered.columns:
+        filtered = filtered[filtered["tema_macro"].fillna("").astype(str) == topic]
+    if input_type != "Todos" and input_column in filtered.columns:
+        filtered = filtered[filtered[input_column].fillna("").astype(str) == input_type]
+    if relevance != "Todas" and "relevancia_label" in filtered.columns:
+        filtered = filtered[filtered["relevancia_label"].fillna("").astype(str) == relevance]
+    return filtered.reset_index(drop=True)
+
+
+def render_regulatory_sunburst(regulatory_map: pd.DataFrame) -> go.Figure | None:
+    """Construye el mapa tema macro → subtema con tamaño documental."""
+    if regulatory_map.empty:
+        return None
+    working = regulatory_map.copy()
+    working["num_documentos"] = pd.to_numeric(working["num_documentos"], errors="coerce").fillna(0)
+    working["relevancia_score_promedio"] = pd.to_numeric(
+        working["relevancia_score_promedio"], errors="coerce"
+    ).fillna(0)
+    children = working.groupby(["tema_macro", "subtema"], dropna=False).agg(
+        num_documentos=("num_documentos", "sum"),
+        relevancia=("relevancia_score_promedio", "mean"),
+        tipo_insumo=("tipo_insumo_agenda", lambda values: values.value_counts().index[0]),
+    ).reset_index()
+    topics = children.groupby("tema_macro", dropna=False).agg(
+        num_documentos=("num_documentos", "sum"), relevancia=("relevancia", "mean"),
+        tipo_insumo=("tipo_insumo", lambda values: values.value_counts().index[0]),
+    ).reset_index()
+    topic_colors = {topic: PALETTE[index % len(PALETTE)] for index, topic in enumerate(topics["tema_macro"])}
+    ids = [f"topic::{topic}" for topic in topics["tema_macro"]]
+    labels = topics["tema_macro"].astype(str).tolist()
+    parents = [""] * len(topics)
+    values = topics["num_documentos"].astype(float).tolist()
+    colors = [topic_colors[topic] for topic in topics["tema_macro"]]
+    customdata = [
+        [topic, "Tema macro", relevance, input_type]
+        for topic, relevance, input_type in zip(topics["tema_macro"], topics["relevancia"], topics["tipo_insumo"])
+    ]
+    for _, row in children.iterrows():
+        topic, subtopic = str(row["tema_macro"]), str(row["subtema"])
+        ids.append(f"sub::{topic}::{subtopic}")
+        labels.append(subtopic)
+        parents.append(f"topic::{topic}")
+        values.append(float(row["num_documentos"]))
+        colors.append(topic_colors[topic])
+        customdata.append([topic, subtopic, float(row["relevancia"]), str(row["tipo_insumo"])])
+    figure = go.Figure(go.Sunburst(
+        ids=ids, labels=labels, parents=parents, values=values, branchvalues="total",
+        marker={"colors": colors, "line": {"color": "#FFFFFF", "width": 2}},
+        customdata=customdata,
+        hovertemplate=(
+            "<b>%{label}</b><br>Tema macro: %{customdata[0]}<br>Subtema: %{customdata[1]}"
+            "<br>Documentos: %{value:.0f}<br>Relevancia promedio: %{customdata[2]:.1f}"
+            "<br>Tipo de insumo principal: %{customdata[3]}<extra></extra>"
+        ),
+        insidetextorientation="radial",
+    ))
+    figure.update_layout(
+        height=470, margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        paper_bgcolor="white", font={"color": "#31333F", "size": 11},
+        hoverlabel={"bgcolor": "white", "font_size": 11, "font_color": "#31333F"},
+    )
+    return figure
+
+
+def render_regulatory_map_table(dataframe: pd.DataFrame) -> str:
+    """Renderiza la lectura regulatoria como tabla HTML compacta."""
+    if dataframe.empty:
+        content = '<div class="raw-empty">No hay lecturas regulatorias para los filtros seleccionados.</div>'
+        st.markdown(content, unsafe_allow_html=True)
+        return content
+    input_styles = {
+        "Nueva iniciativa": "insumo-new", "Ajuste a iniciativa existente": "insumo-adjust",
+        "Nota técnica": "insumo-note", "Seguimiento": "insumo-follow",
+        "No prioritario": "insumo-low",
+    }
+    rows: list[str] = []
+    for _, row in dataframe.iterrows():
+        relevance = str(row.get("relevancia_label", "Baja"))
+        relevance_class = "rel-hi" if relevance == "Alta" else "rel-mid" if relevance == "Media" else "rel-low"
+        input_type = str(row.get("tipo_insumo_agenda", "Seguimiento"))
+        rows.append(
+            "<tr>"
+            f'<td><span class="topic-badge">{html.escape(str(row.get("tema_macro", "")))}</span></td>'
+            f'<td><div class="two-line">{html.escape(str(row.get("subtema", "")))}</div></td>'
+            f'<td><div class="two-line" title="{html.escape(str(row.get("debate_regulatorio", "")), quote=True)}">{html.escape(str(row.get("debate_regulatorio", "")))}</div></td>'
+            f'<td><div class="two-line" title="{html.escape(str(row.get("implicacion_regulatoria", "")), quote=True)}">{html.escape(str(row.get("implicacion_regulatoria", "")))}</div></td>'
+            f'<td><span class="insumo-badge {input_styles.get(input_type, "insumo-low")}">{html.escape(input_type)}</span></td>'
+            f'<td><span class="{relevance_class}">{html.escape(relevance)}</span></td>'
+            "</tr>"
+        )
+    content = (
+        '<div class="reg-table-wrap"><table class="reg-table"><thead><tr>'
+        '<th>TEMA MACRO</th><th>SUBTEMA</th><th>DEBATE REGULATORIO</th>'
+        '<th>IMPLICACIÓN REGULATORIA</th><th>TIPO DE INSUMO</th><th>RELEVANCIA</th>'
+        f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    )
+    st.markdown(content, unsafe_allow_html=True)
+    return content
+
+
+def render_regulatory_trend_cards(trends: pd.DataFrame) -> str:
+    """Genera una card por cada tema macro del subconjunto filtrado."""
+    if trends.empty:
+        content = '<div class="raw-empty">No hay tendencias regulatorias para los filtros seleccionados.</div>'
+        st.markdown(content, unsafe_allow_html=True)
+        return content
+    input_styles = {
+        "Nueva iniciativa": "badge-new", "Ajuste a iniciativa existente": "badge-adjust",
+        "Nota técnica": "badge-note", "Seguimiento": "badge-follow", "No prioritario": "badge-low",
+    }
+    cards: list[str] = []
+    for _, row in trends.iterrows():
+        relevance = str(row.get("relevancia_label", "Baja"))
+        relevance_kind = "high" if relevance == "Alta" else "medium" if relevance == "Media" else "low"
+        input_type = str(row.get("tipo_insumo_principal", "Seguimiento"))
+        fields = [
+            ("¿De qué trata?", "de_que_trata"), ("¿Qué está pasando?", "que_esta_pasando"),
+            ("¿Por qué importa?", "por_que_importa"), ("Implicación regulatoria", "implicacion_regulatoria"),
+        ]
+        body = "".join(
+            f'<div class="trend-field"><b>{html.escape(label)}</b>{html.escape(str(row.get(column, "")))}</div>'
+            for label, column in fields
+        )
+        cards.append(
+            '<article class="trend-card">'
+            f'<div class="trend-topic"><span class="topic-badge">{html.escape(str(row.get("tema_asociado", "")))}</span></div>'
+            f'<h4>{html.escape(str(row.get("nombre_tendencia", "")))}</h4>{body}'
+            '<div class="trend-footer">'
+            f'{render_badge(relevance, relevance_kind)}'
+            f'<span class="badge {input_styles.get(input_type, "badge-low")}">{html.escape(input_type)}</span>'
+            '</div></article>'
+        )
+    content = f'<div class="trend-grid">{"".join(cards)}</div>'
+    st.markdown(content, unsafe_allow_html=True)
+    return content
+
+
+def _regulatory_filter_controls(dataframe: pd.DataFrame, prefix: str, input_column: str) -> tuple[str, str, str]:
+    topics = sorted(dataframe.get("tema_macro", pd.Series(dtype=str)).dropna().astype(str).unique(), key=str.casefold)
+    inputs = sorted(dataframe.get(input_column, pd.Series(dtype=str)).dropna().astype(str).unique(), key=str.casefold)
+    relevances = [value for value in ["Alta", "Media", "Baja"] if value in set(dataframe.get("relevancia_label", []))]
+    columns = st.columns(3, gap="medium")
+    with columns[0]: topic = st.selectbox("Tema macro", ["Todos"] + topics, key=f"{prefix}_topic")
+    with columns[1]: input_type = st.selectbox("Tipo de insumo", ["Todos"] + inputs, key=f"{prefix}_input")
+    with columns[2]: relevance = st.selectbox("Relevancia", ["Todas"] + relevances, key=f"{prefix}_relevance")
+    return topic, input_type, relevance
+
+
+def _render_regulatory_map(records: pd.DataFrame) -> None:
+    regulatory_map = build_regulatory_map(records)
+    with st.container(border=True):
+        topic, input_type, relevance = _regulatory_filter_controls(regulatory_map, "reg_map", "tipo_insumo_agenda")
+    filtered = filter_regulatory_rows(regulatory_map, topic, input_type, relevance)
+    metrics = [
+        ("Temas macro identificados", filtered.get("tema_macro", pd.Series(dtype=str)).nunique()),
+        ("Subtemas regulatorios", filtered.get("subtema", pd.Series(dtype=str)).nunique()),
+        ("Debates activos", filtered.get("debate_regulatorio", pd.Series(dtype=str)).nunique()),
+        ("Implicaciones para agenda", filtered.get("implicacion_regulatoria", pd.Series(dtype=str)).nunique()),
+    ]
+    st.markdown(
+        '<div class="metric-grid panorama-grid">' + "".join(render_metric_card(label, value) for label, value in metrics) + "</div>",
+        unsafe_allow_html=True,
+    )
+    with st.container(border=True):
+        st.markdown("### División temática del corpus regulatorio")
+        st.caption("Cada tema macro se descompone en subtemas regulatorios derivados de las señales procesadas.")
+        figure = render_regulatory_sunburst(filtered)
+        if figure is None:
+            st.info("No hay datos regulatorios para los filtros seleccionados.")
+        else:
+            st.plotly_chart(figure, use_container_width=True, config={"displayModeBar": False})
+    render_section_title("Lectura regulatoria por tema", f"{len(filtered)} lecturas")
+    render_regulatory_map_table(filtered)
+
+
+def _render_regulatory_trends(records: pd.DataFrame) -> None:
+    trends = build_regulatory_trends(records)
+    with st.container(border=True):
+        topic, input_type, relevance = _regulatory_filter_controls(trends, "reg_trends", "tipo_insumo_principal")
+    filtered = filter_regulatory_rows(trends, topic, input_type, relevance, "tipo_insumo_principal")
+    render_section_title("Tendencias regulatorias explicadas", f"{len(filtered)} temas")
+    render_regulatory_trend_cards(filtered)
+
+
+def _render_regulatory_intelligence(records: pd.DataFrame) -> None:
+    st.markdown("## Inteligencia regulatoria")
+    subtabs = st.tabs(["Mapa temático regulatorio", "Tendencias regulatorias explicadas"])
+    with subtabs[0]:
+        st.caption("Organiza los hallazgos del corpus en temas macro, subtemas, debates regulatorios e implicaciones para la Agenda ANE.")
+        _render_regulatory_map(records)
+    with subtabs[1]:
+        st.caption("Traduce los temas tecnológicos detectados en tendencias regulatorias comprensibles, indicando qué está cambiando, por qué importa y qué podría implicar para la ANE.")
+        _render_regulatory_trends(records)
+
+
 def _limit_matrix(matrix: pd.DataFrame, max_rows: int | None = None, max_cols: int | None = None) -> pd.DataFrame:
     """Conserva las categorías con mayor intensidad dentro del filtro activo."""
     limited = matrix
@@ -931,11 +1150,12 @@ def main() -> None:
         render_metric_card("Registros visibles", len(filtered)),
         unsafe_allow_html=True,
     )
-    tabs = st.tabs(["Panorama estratégico", "Señales emergentes y oportunidades", "Cruces analíticos", "Base procesada"])
+    tabs = st.tabs(["Panorama estratégico", "Inteligencia regulatoria", "Señales emergentes y oportunidades", "Cruces analíticos", "Base procesada"])
     with tabs[0]: _render_panorama(filtered)
-    with tabs[1]: _render_signals(filtered)
-    with tabs[2]: _render_crosses(filtered)
-    with tabs[3]: _render_raw_data(filtered)
+    with tabs[1]: _render_regulatory_intelligence(filtered)
+    with tabs[2]: _render_signals(filtered)
+    with tabs[3]: _render_crosses(filtered)
+    with tabs[4]: _render_raw_data(filtered)
 
 if __name__ == "__main__":
     main()

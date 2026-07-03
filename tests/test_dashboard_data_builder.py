@@ -27,3 +27,16 @@ def test_build_dashboard_data_creates_expected_demo_csvs(tmp_path: Path, monkeyp
 def test_missing_input_has_actionable_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(builder, "INPUT_CSV", tmp_path / "missing.csv")
     with pytest.raises(FileNotFoundError, match="python app/llm_extract.py"): builder.build_dashboard_data()
+
+
+def test_regulatory_datasets_have_complete_explanations() -> None:
+    records = pd.DataFrame([
+        {"document_id": "1", "tema_estrategico": "6 GHz, Wi-Fi e IMT", "senal_regulatoria": "Consulta upper 6 GHz", "tecnologias": '["Wi-Fi"]', "bandas_frecuencia": '["6 GHz"]', "tipo_insumo_agenda": "Seguimiento", "relevancia_label": "Alta", "relevancia_score": 8},
+        {"document_id": "2", "tema_estrategico": "Conectividad satelital, NTN y D2D", "senal_regulatoria": "Reglas D2D", "tecnologias": '["D2D"]', "bandas_frecuencia": '[]', "tipo_insumo_agenda": "Nota técnica", "relevancia_label": "Alta", "relevancia_score": 9},
+    ])
+    regulatory_map = builder.build_regulatory_map(records)
+    trends = builder.build_regulatory_trends(records)
+    assert len(trends) == regulatory_map["tema_macro"].nunique() == 2
+    assert not regulatory_map[["subtema", "debate_regulatorio", "implicacion_regulatoria"]].replace("", pd.NA).isna().any().any()
+    required = ["nombre_tendencia", "de_que_trata", "que_esta_pasando", "por_que_importa", "implicacion_regulatoria"]
+    assert not trends[required].replace("", pd.NA).isna().any().any()

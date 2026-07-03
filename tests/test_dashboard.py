@@ -10,6 +10,8 @@ from app.dashboard import (
     render_relevance_methodology, render_topic_corpus_treemap,
     render_html_heatmap, render_signals_table, short_topic_label, shorten_label,
     render_raw_data_table, render_topic_relevance_bar,
+    filter_regulatory_rows, render_regulatory_map_table,
+    render_regulatory_sunburst, render_regulatory_trend_cards,
     truncate_label, _render_topic_relevance,
     _build_filtered_signals, _filter_raw_records, _priority_label,
     _render_crosses, _render_raw_data, _render_signals,
@@ -174,7 +176,8 @@ def test_dashboard_renders_visual_structure_without_errors() -> None:
     app = AppTest.from_file(str(dashboard_path), default_timeout=120).run()
     assert not app.exception
     assert [tab.label for tab in app.tabs] == [
-        "Panorama estratégico", "Señales emergentes y oportunidades",
+        "Panorama estratégico", "Inteligencia regulatoria", "Mapa temático regulatorio",
+        "Tendencias regulatorias explicadas", "Señales emergentes y oportunidades",
         "Cruces analíticos", "Base procesada",
     ]
     assert app.title[0].value == "Vigilancia Tecnológica — PMGE 2026-2030 / Agenda ANE 2027-2028"
@@ -208,3 +211,29 @@ def test_raw_table_has_only_executive_columns_badges_and_inferred_year() -> None
     assert "Disponibilidad y asignación de espectro" in table
     assert 'class="insumo-badge insumo-new"' in table and 'class="rel-hi"' in table
     assert "st.dataframe" not in inspect.getsource(_render_raw_data)
+
+
+def test_regulatory_map_filters_sunburst_and_html_table() -> None:
+    regulatory_map = pd.DataFrame([
+        {"tema_macro": "Tema A", "subtema": "Subtema 1", "debate_regulatorio": "Debate A", "implicacion_regulatoria": "Implicación A", "tipo_insumo_agenda": "Seguimiento", "relevancia_label": "Alta", "relevancia_score_promedio": 8, "num_documentos": 2, "num_senales": 2},
+        {"tema_macro": "Tema B", "subtema": "Subtema 2", "debate_regulatorio": "Debate B", "implicacion_regulatoria": "Implicación B", "tipo_insumo_agenda": "Nota técnica", "relevancia_label": "Media", "relevancia_score_promedio": 6, "num_documentos": 1, "num_senales": 1},
+    ])
+    filtered = filter_regulatory_rows(regulatory_map, "Tema A", "Seguimiento", "Alta")
+    assert len(filtered) == 1
+    figure = render_regulatory_sunburst(filtered)
+    assert figure is not None and figure.data[0].type == "sunburst"
+    assert "Subtema 1" in list(figure.data[0].labels)
+    table = render_regulatory_map_table(filtered)
+    assert 'class="reg-table"' in table and "Debate A" in table
+    assert "st.dataframe" not in inspect.getsource(render_regulatory_map_table)
+
+
+def test_regulatory_trend_cards_follow_filtered_topic_count() -> None:
+    trends = pd.DataFrame([
+        {"tema_macro": topic, "nombre_tendencia": f"Tendencia {topic}", "tema_asociado": topic, "de_que_trata": "Trata", "que_esta_pasando": "Pasa", "por_que_importa": "Importa", "implicacion_regulatoria": "Implica", "relevancia_label": "Alta", "tipo_insumo_principal": "Seguimiento"}
+        for topic in ["Tema A", "Tema B", "Tema C"]
+    ])
+    content = render_regulatory_trend_cards(trends)
+    assert content.count('class="trend-card"') == trends["tema_macro"].nunique() == 3
+    assert "Tendencia Tema A" in content
+    assert "Tendencia Tema A" not in inspect.getsource(render_regulatory_trend_cards)

@@ -12,6 +12,114 @@ TIPOS_INSUMO_AGENDA = ["Nueva iniciativa", "Ajuste a iniciativa existente", "Not
 RELEVANCIA_LABELS = ["Alta", "Media", "Baja"]
 TIPOS_EVENTO_REGULATORIO = ["Subasta", "Consulta pública", "Refarming", "Asignación de espectro", "Compartición de espectro", "Renovación", "Topes de espectro", "Tasas / fees", "Condiciones técnicas", "Armonización internacional", "Salud / EMF", "Otro"]
 
+# Lecturas regulatorias determinísticas. Estos textos son reglas de taxonomía,
+# no contenido generado ni datos fijos de presentación en el dashboard.
+REGULATORY_PROFILES: dict[str, dict[str, str]] = {
+    "6 GHz, Wi-Fi e IMT": {
+        "subtema": "Upper 6 GHz / Wi-Fi / IMT",
+        "debate": "Definición del uso de la banda 6 GHz entre Wi-Fi, IMT o esquemas compartidos.",
+        "implicacion": "Seguimiento técnico sobre coexistencia, armonización internacional y posibles escenarios de decisión regulatoria.",
+        "nombre": "Competencia regulatoria por la banda 6 GHz",
+        "trata": "La banda 6 GHz aparece como un espacio de disputa regulatoria entre su uso para Wi-Fi avanzado, su posible identificación para IMT y esquemas de uso compartido.",
+        "pasando": "Los documentos revisados muestran discusiones sobre si esta banda debe mantenerse para uso no licenciado, abrirse a servicios móviles o gestionarse mediante modelos híbridos.",
+        "importa": "La decisión puede afectar la disponibilidad futura de espectro para conectividad de alta capacidad, innovación en redes inalámbricas y armonización regional.",
+    },
+    "Conectividad satelital, NTN y D2D": {
+        "subtema": "Direct-to-device / NTN",
+        "debate": "Integración de servicios satelitales con redes móviles y conectividad directa a dispositivos.",
+        "implicacion": "Analizar condiciones de autorización, interferencia, coordinación internacional y compatibilidad con atribuciones actuales.",
+        "nombre": "Expansión de conectividad satelital directa a dispositivos",
+        "trata": "Los servicios satelitales direct-to-device buscan conectar teléfonos o dispositivos IoT directamente con satélites, sin depender completamente de infraestructura terrestre.",
+        "pasando": "El mercado y los reguladores están explorando modelos de conectividad satelital integrada con redes móviles, especialmente para cobertura en zonas remotas o de emergencia.",
+        "importa": "Puede cambiar la forma en que se entiende la cobertura móvil, la asignación de bandas y la coordinación entre servicios terrestres y satelitales.",
+    },
+    "Spectrum sharing y mecanismos flexibles": {
+        "subtema": "Compartición dinámica del espectro",
+        "debate": "Uso de modelos flexibles o compartidos de acceso al espectro, incluyendo bases de datos, licencias locales o uso secundario.",
+        "implicacion": "Explorar pilotos regulatorios, reglas de coexistencia y mecanismos de autorización más flexibles.",
+        "nombre": "Uso flexible y compartido del espectro",
+        "trata": "La gestión del espectro está migrando de esquemas rígidos de asignación exclusiva hacia modelos más flexibles, compartidos o dinámicos.",
+        "pasando": "Se observan discusiones sobre licenciamiento local, uso secundario, compartición dinámica, bases de datos de coordinación y esquemas de acceso diferenciado.",
+        "importa": "Estos modelos pueden mejorar la eficiencia en el uso del espectro y habilitar nuevos actores o servicios sin esperar grandes procesos de asignación nacional.",
+    },
+    "Redes privadas y verticales industriales": {
+        "subtema": "Espectro local para industria",
+        "debate": "Demanda de espectro para redes privadas en sectores productivos e industriales.",
+        "implicacion": "Evaluar esquemas de asignación local, permisos sectoriales y condiciones técnicas diferenciadas.",
+        "nombre": "Redes privadas para sectores industriales",
+        "trata": "Sectores productivos están demandando espectro para redes privadas que soporten automatización, IoT industrial, operación remota y comunicaciones críticas.",
+        "pasando": "Los reguladores están explorando esquemas de asignación local, licencias sectoriales o condiciones diferenciadas para verticales industriales.",
+        "importa": "Puede ampliar el uso del espectro más allá de operadores móviles tradicionales y exigir reglas específicas para industria, energía, logística o minería.",
+    },
+    "Disponibilidad de espectro para IMT": {
+        "subtema": "Bandas bajas, medias y altas para IMT",
+        "debate": "Disponibilidad de espectro para cobertura, capacidad y evolución hacia 5G/5G-Advanced.",
+        "implicacion": "Priorizar análisis de disponibilidad, necesidades futuras de espectro y condiciones de armonización.",
+        "nombre": "Mayor presión por disponibilidad de espectro para 5G y 5G-Advanced",
+        "trata": "La evolución hacia 5G avanzado exige revisar la disponibilidad de bandas bajas, medias y altas para cobertura, capacidad y nuevos casos de uso.",
+        "pasando": "Los documentos muestran interés en procesos de asignación, reorganización de bandas, condiciones técnicas y modelos de uso eficiente del espectro móvil.",
+        "importa": "La disponibilidad de espectro condiciona el despliegue de redes, la calidad del servicio y la competitividad digital del país.",
+    },
+    "Bandas medias y altas para servicios móviles": {
+        "subtema": "Bandas medias, mmWave y evolución hacia 6G",
+        "debate": "Identificación y ordenamiento de bandas medias y altas para capacidad móvil, usos locales y evolución tecnológica.",
+        "implicacion": "Evaluar planes de banda, coexistencia y condiciones de asignación para usos nacionales y locales.",
+        "nombre": "Reordenamiento de bandas medias y altas para redes avanzadas",
+        "trata": "Las bandas medias y milimétricas concentran decisiones sobre capacidad 5G, despliegues locales y preparación de espectro para redes de nueva generación.",
+        "pasando": "Los reguladores comparan procesos de asignación, licencias locales y condiciones de coexistencia en bandas con distintos niveles de madurez y ecosistema.",
+        "importa": "Estas decisiones definen cuánto espectro de alta capacidad puede movilizarse y bajo qué condiciones técnicas y territoriales.",
+    },
+    "Armonización y gestión internacional": {
+        "subtema": "Seguimiento internacional UIT/CITEL/WRC",
+        "debate": "Seguimiento de decisiones internacionales que afectan atribuciones, bandas, límites técnicos y prioridades regionales.",
+        "implicacion": "Alinear posiciones nacionales con tendencias internacionales y preparar insumos para agenda regulatoria.",
+        "nombre": "Alineación internacional de decisiones sobre espectro",
+        "trata": "Las decisiones de organismos y mercados internacionales influyen en la forma en que se definen atribuciones, bandas prioritarias y condiciones técnicas.",
+        "pasando": "Los documentos muestran referencias a procesos internacionales, posiciones regionales y seguimiento de decisiones de organismos como UIT, CITEL o WRC.",
+        "importa": "La gestión nacional del espectro requiere consistencia con tendencias internacionales para reducir riesgos de fragmentación y facilitar economías de escala.",
+    },
+}
+
+REGULATORY_FALLBACK = {
+    "subtema": "Seguimiento general",
+    "debate": "Tema identificado en el corpus que requiere seguimiento técnico adicional.",
+    "implicacion": "Evaluar pertinencia para la Agenda ANE según recurrencia, fuente y relevancia.",
+    "nombre": "Seguimiento regulatorio de temas transversales",
+    "trata": "El corpus identifica un frente de seguimiento que conecta cambios tecnológicos con decisiones de gestión del espectro.",
+    "pasando": "Las fuentes revisadas registran actuaciones, consultas o discusiones que requieren consolidación técnica antes de definir una respuesta regulatoria.",
+    "importa": "Su recurrencia y relevancia pueden convertirlo en un insumo para priorizar estudios, coordinación institucional o ajustes de agenda.",
+}
+
+
+def regulatory_profile(topic: str) -> dict[str, str]:
+    """Devuelve la lectura regulatoria controlada para un tema macro."""
+    return REGULATORY_PROFILES.get(str(topic).strip(), REGULATORY_FALLBACK).copy()
+
+
+def infer_regulatory_subtopic(topic: str, technologies: Any, bands: Any, signal: str = "") -> str:
+    """Refina el segundo nivel del mapa con evidencia presente en cada registro."""
+    profile = regulatory_profile(topic)
+    haystack = _key(" ".join(
+        [str(topic), str(signal)] + parse_list_field(technologies) + parse_list_field(bands)
+    ))
+    if topic == "Conectividad satelital, NTN y D2D":
+        if any(term in haystack for term in ("d2d", "direct-to-device", "direct to device", "scs")):
+            return "Conectividad directa a dispositivos"
+        if any(term in haystack for term in ("leo", "meo", "geo", "ngso", "constelacion")):
+            return "Constelaciones y coordinación satelital"
+    if topic == "Disponibilidad de espectro para IMT":
+        if any(term in haystack for term in ("600 mhz", "700 mhz", "800 mhz", "900 mhz")):
+            return "Bandas bajas para cobertura IMT"
+        if any(term in haystack for term in ("2.3 ghz", "2.6 ghz", "3.5 ghz", "3.3-3.8 ghz")):
+            return "Bandas medias para capacidad IMT"
+    if topic == "Bandas medias y altas para servicios móviles":
+        if any(term in haystack for term in ("26 ghz", "28 ghz", "37 ghz", "40 ghz", "mmwave")):
+            return "Bandas milimétricas para alta capacidad"
+    if topic == "Spectrum sharing y mecanismos flexibles":
+        if any(term in haystack for term in ("local", "licencia local", "private", "privada")):
+            return "Licenciamiento local y acceso diferenciado"
+    return profile["subtema"]
+
 def _key(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     return re.sub(r"\s+", " ", "".join(c for c in text if not unicodedata.combining(c)).strip().casefold())
