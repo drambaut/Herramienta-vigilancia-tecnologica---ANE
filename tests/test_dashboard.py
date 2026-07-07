@@ -178,13 +178,19 @@ def test_dashboard_renders_visual_structure_without_errors() -> None:
     assert [tab.label for tab in app.tabs] == [
         "Panorama estratégico", "Inteligencia regulatoria", "Mapa temático regulatorio",
         "Tendencias regulatorias explicadas", "Señales emergentes y oportunidades",
-        "Cruces analíticos", "Base procesada",
+        "Cruces analíticos", "Alineación estratégica",
+        "Vigilancia documental × Matriz de políticas", "PMGE / Agenda × Matriz de políticas",
+        "Base procesada",
     ]
     assert app.title[0].value == "Vigilancia Tecnológica — PMGE 2026-2030 / Agenda ANE 2027-2028"
-    assert [widget.label for widget in app.multiselect] == [
+    multiselect_labels = [widget.label for widget in app.multiselect]
+    for label in [
         "Fuente", "Tema estratégico", "Línea PMGE", "Tipo de insumo",
         "Relevancia", "Tecnología", "Banda de frecuencia",
-    ]
+    ]:
+        assert label in multiselect_labels
+    assert "Tendencia documental" in multiselect_labels
+    assert "Proyecto PMGE / Agenda" in multiselect_labels
 
 def test_raw_internal_filters_search_all_requested_fields() -> None:
     records = pd.DataFrame([

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -17,8 +18,25 @@ except ModuleNotFoundError:  # Ejecución directa: python app/dashboard_data_bui
 LOGGER = logging.getLogger(__name__)
 INPUT_CSV = STRUCTURED_DATA_DIR / "structured_documents.csv"
 DEMO_DATA_DIR = PROJECT_ROOT / "demo_data"
-OUTPUT_NAMES = ["dashboard_records.csv", "dashboard_signals.csv", "dashboard_temas_counts.csv", "dashboard_relevancia_counts.csv", "dashboard_tipo_insumo_counts.csv", "dashboard_tecnologias_counts.csv", "dashboard_bandas_counts.csv", "dashboard_tema_fuente_matrix.csv", "dashboard_tema_tecnologia_matrix.csv", "dashboard_banda_tecnologia_matrix.csv", "dashboard_tema_tipo_insumo_matrix.csv", "dashboard_tema_relevancia_matrix.csv", "dashboard_regulatory_map.csv", "dashboard_regulatory_trends.csv"]
+REFERENCE_DATA_DIR = PROJECT_ROOT / "data" / "reference"
+POLICY_ACTIVITY_COLUMNS = ["activity_id", "policy_name", "instrument_name", "policy_axis", "activity_name", "activity_description", "responsible_area", "execution_period", "keywords"]
+PMGE_PROJECT_COLUMNS = ["project_id", "source_document", "pmge_line", "project_name", "project_description", "expected_output", "timeframe", "keywords"]
+DOCUMENT_POLICY_ALIGNMENT_COLUMNS = ["alignment_id", "trend_name", "topic_macro", "support_documents", "support_sources", "policy_activity_id", "policy_name", "policy_activity_name", "coverage_status", "documentary_evidence", "recommendation", "opportunity_score", "score_label"]
+PMGE_POLICY_ALIGNMENT_COLUMNS = ["alignment_id", "project_id", "source_document", "pmge_line", "project_name", "policy_activity_id", "policy_name", "policy_activity_name", "alignment_level", "observation", "suggested_action", "alignment_score", "score_label"]
+OUTPUT_NAMES = ["dashboard_records.csv", "dashboard_signals.csv", "dashboard_temas_counts.csv", "dashboard_relevancia_counts.csv", "dashboard_tipo_insumo_counts.csv", "dashboard_tecnologias_counts.csv", "dashboard_bandas_counts.csv", "dashboard_tema_fuente_matrix.csv", "dashboard_tema_tecnologia_matrix.csv", "dashboard_banda_tecnologia_matrix.csv", "dashboard_tema_tipo_insumo_matrix.csv", "dashboard_tema_relevancia_matrix.csv", "dashboard_regulatory_map.csv", "dashboard_regulatory_trends.csv", "policy_matrix_activities.csv", "pmge_projects.csv", "dashboard_document_policy_alignment.csv", "dashboard_pmge_policy_alignment.csv"]
 INTERNATIONAL_SOURCES = ("cullen international", "policytracker", "gsma", "worldbank", "world bank", "reguladores", "uit", "citel", "itu")
+ALLOWED_COVERAGE_STATUS = ("Alta relación", "Parcial", "Brecha", "S/E")
+ALLOWED_ALIGNMENT_LEVEL = ("Alta", "Parcial", "Débil", "S/E")
+SEMANTIC_GROUPS = {
+    "6 GHz Wi-Fi uso libre": ("6 ghz", "wi-fi", "wifi", "uso libre", "no licenciado", "unlicensed"),
+    "IMT 5G bandas": ("imt", "5g", "5g-advanced", "bandas bajas", "bandas medias", "bandas altas", "3.5 ghz", "700 mhz", "26 ghz"),
+    "Satelital NTN D2D": ("satelital", "satélite", "satellite", "d2d", "ntn", "leo", "mss", "ngso"),
+    "Compartición flexible": ("sharing", "compartición", "comparticion", "flexible", "mercado secundario", "uso compartido", "dinámico"),
+    "Redes privadas": ("redes privadas", "verticales industriales", "industriales", "local 5g", "npn"),
+    "Datos IA gobernanza": ("datos", "ia", "analítica", "analitica", "modernización digital", "gobernanza", "digital"),
+    "Vigilancia control": ("vigilancia", "control", "supervisión", "supervision", "riesgos", "interferencia"),
+    "Internacional": ("uit", "citel", "cmr", "wrc", "internacional", "armonización", "armonizacion"),
+}
 
 def _text(row: pd.Series, column: str) -> str:
     value = row.get(column, "")
@@ -195,9 +213,334 @@ def build_regulatory_trends(records: pd.DataFrame) -> pd.DataFrame:
         ["relevancia_score_promedio", "num_documentos"], ascending=False
     ).reset_index(drop=True)
 
+
+def _empty_frame(columns: list[str]) -> pd.DataFrame:
+    return pd.DataFrame(columns=columns)
+
+
+def _normalize_column_name(value: Any) -> str:
+    text = str(value or "").casefold().strip()
+    replacements = str.maketrans("áéíóúüñ", "aeiouun")
+    return re.sub(r"[^a-z0-9]+", " ", text.translate(replacements)).strip()
+
+
+def _find_reference_file(candidates: list[str], extensions: tuple[str, ...]) -> Path | None:
+    if not REFERENCE_DATA_DIR.exists():
+        return None
+    scored: list[tuple[int, Path]] = []
+    for path in REFERENCE_DATA_DIR.iterdir():
+        if path.suffix.casefold() not in extensions:
+            continue
+        name = _normalize_column_name(path.stem)
+        score = sum(1 for candidate in candidates if candidate in name)
+        if score:
+            scored.append((score, path))
+    return max(scored, key=lambda item: item[0])[1] if scored else None
+
+
+def _match_column(columns: list[str], aliases: tuple[str, ...]) -> str | None:
+    normalized = {column: _normalize_column_name(column) for column in columns}
+    for column, name in normalized.items():
+        if name in aliases:
+            return column
+    for column, name in normalized.items():
+        if any(alias in name for alias in aliases):
+            return column
+    return None
+
+
+def _row_text(row: pd.Series, columns: list[str]) -> str:
+    return " ".join(_text(row, column) for column in columns if column in row.index)
+
+
+def _semantic_keywords(text: str) -> list[str]:
+    folded = _normalize_column_name(text)
+    found: list[str] = []
+    for label, terms in SEMANTIC_GROUPS.items():
+        if any(_normalize_column_name(term) in folded for term in terms):
+            found.append(label)
+    return found
+
+
+def _keywords_for_text(text: str) -> str:
+    keywords = _semantic_keywords(text)
+    if keywords:
+        return ", ".join(keywords)
+    words = re.findall(r"\b[\wÁÉÍÓÚÜÑáéíóúüñ-]{4,}\b", text, flags=re.UNICODE)
+    seen: list[str] = []
+    for word in words:
+        clean = word.strip(".,;:").lower()
+        if clean not in seen:
+            seen.append(clean)
+        if len(seen) >= 8:
+            break
+    return ", ".join(seen)
+
+
+def build_policy_matrix_activities() -> pd.DataFrame:
+    """Deriva actividades de politica publica desde el Excel de referencia."""
+    path = _find_reference_file(["matriz", "politicas"], (".xlsx", ".xls"))
+    if path is None:
+        return _empty_frame(POLICY_ACTIVITY_COLUMNS)
+    frames: list[pd.DataFrame] = []
+    try:
+        workbook = pd.ExcelFile(path)
+        for sheet_name in workbook.sheet_names:
+            frame = pd.read_excel(path, sheet_name=sheet_name, dtype=str).fillna("")
+            if not frame.empty:
+                frames.append(frame)
+    except Exception as exc:  # pragma: no cover - defensivo ante Excels malformados
+        LOGGER.warning("No fue posible leer la matriz de politicas %s: %s", path, exc)
+        return _empty_frame(POLICY_ACTIVITY_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for frame in frames:
+        columns = frame.columns.astype(str).tolist()
+        policy_col = _match_column(columns, ("politica", "documento"))
+        instrument_col = _match_column(columns, ("instrumento", "documento"))
+        axis_col = _match_column(columns, ("eje", "linea", "objetivo"))
+        activity_col = _match_column(columns, ("actividad", "accion", "accion o actividad"))
+        description_col = _match_column(columns, ("descripcion", "objetivo", "justificacion", "alcance"))
+        responsible_col = _match_column(columns, ("responsable", "area", "dependencia", "grupo"))
+        period_col = _match_column(columns, ("plazo", "periodo", "temporalidad", "ejecucion"))
+        if not activity_col:
+            continue
+        for _, row in frame.iterrows():
+            activity = _text(row, activity_col)
+            if not activity:
+                continue
+            policy = _text(row, policy_col or "") or "Matriz de politicas publicas"
+            axis = _text(row, axis_col or "")
+            description = _text(row, description_col or "") or activity
+            rows.append({
+                "activity_id": f"ACT-{len(rows) + 1:03d}",
+                "policy_name": policy,
+                "instrument_name": _text(row, instrument_col or "") or policy,
+                "policy_axis": axis,
+                "activity_name": activity,
+                "activity_description": description,
+                "responsible_area": _text(row, responsible_col or ""),
+                "execution_period": _text(row, period_col or ""),
+                "keywords": _keywords_for_text(" ".join([policy, axis, activity, description])),
+            })
+    return pd.DataFrame(rows, columns=POLICY_ACTIVITY_COLUMNS)
+
+
+def _pmge_line_for_text(text: str) -> str:
+    folded = _normalize_column_name(text)
+    if any(term in folded for term in ("satelital", "satellite", "ntn", "d2d")):
+        return "Espectro para promover la conectividad satelital"
+    if any(term in folded for term in ("imt", "5g", "banda", "espectro")):
+        return "Disponibilidad de espectro"
+    if any(term in folded for term in ("internacional", "uit", "citel", "cmr", "wrc")):
+        return "Gestión internacional del espectro"
+    if any(term in folded for term in ("innovacion", "comparticion", "uso eficiente", "datos", "ia", "vigilancia")):
+        return "Innovación en la gestión y uso del espectro"
+    return "Necesidades transversales para la gestión del espectro"
+
+
+def build_pmge_projects() -> pd.DataFrame:
+    """Deriva proyectos PMGE; prefiere CSV manual y usa PDF solo si hay bloques claros."""
+    manual = REFERENCE_DATA_DIR / "pmge_projects_manual.csv"
+    if manual.exists():
+        frame = pd.read_csv(manual, dtype=str, keep_default_na=False)
+        for column in PMGE_PROJECT_COLUMNS:
+            if column not in frame.columns:
+                frame[column] = ""
+        return frame[PMGE_PROJECT_COLUMNS]
+    path = _find_reference_file(["pmge"], (".pdf",))
+    if path is None:
+        LOGGER.warning("No existe PDF PMGE ni data/reference/pmge_projects_manual.csv; se genera CSV vacio.")
+        return _empty_frame(PMGE_PROJECT_COLUMNS)
+    try:
+        import fitz  # type: ignore
+        document = fitz.open(path)
+        text = "\n".join(page.get_text() for page in document)
+    except Exception as exc:  # pragma: no cover - dependiente de backend PDF
+        LOGGER.warning("No fue posible procesar %s: %s", path, exc)
+        return _empty_frame(PMGE_PROJECT_COLUMNS)
+    pattern = re.compile(
+        r"(?:\d+\.\d+\.\d+\s+)?Nombre del proyecto:\s*(?P<name>.+?)(?:\n\s*\n|Alcance y justificación:)\s*(?P<body>.*?)(?=(?:\n\s*\d+\.\d+\.\d+\s+Nombre del proyecto:)|(?:\n\s*3\.2\s+Resumen)|\Z)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    rows: list[dict[str, Any]] = []
+    for match in pattern.finditer(text):
+        name = " ".join(match.group("name").split())
+        body = " ".join(match.group("body").split())
+        if len(name) < 8:
+            continue
+        timeframe_match = re.search(r"(20\d{2}(?:\s*[-–]\s*20\d{2})?)", body)
+        rows.append({
+            "project_id": f"PMGE-{len(rows) + 1:03d}",
+            "source_document": path.name,
+            "pmge_line": _pmge_line_for_text(" ".join([name, body])),
+            "project_name": name.rstrip("."),
+            "project_description": body[:900],
+            "expected_output": "",
+            "timeframe": timeframe_match.group(1) if timeframe_match else "",
+            "keywords": _keywords_for_text(" ".join([name, body])),
+        })
+    if not rows:
+        LOGGER.warning("No se identificaron bloques de proyectos en %s; se genera CSV vacio.", path)
+    return pd.DataFrame(rows, columns=PMGE_PROJECT_COLUMNS)
+
+
+def _keyword_set(*values: Any) -> set[str]:
+    text = _normalize_column_name(" ".join(str(value or "") for value in values))
+    terms = set(_semantic_keywords(text))
+    terms.update(term for term in re.findall(r"\b[a-z0-9]{4,}\b", text) if term not in {"para", "como", "sobre", "esta", "este", "entre", "desde", "publica", "politica"})
+    return terms
+
+
+def _match_ratio(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left.intersection(right)) / max(1, min(len(left), len(right)))
+
+
+def _score_label_100(score: float) -> str:
+    if score >= 75:
+        return "Alta"
+    if score >= 50:
+        return "Media"
+    return "Baja"
+
+
+def _coverage_from_match(match: float) -> str:
+    if match >= .34:
+        return "Alta relación"
+    if match >= .14:
+        return "Parcial"
+    if match > 0:
+        return "Brecha"
+    return "S/E"
+
+
+def _alignment_from_match(match: float) -> str:
+    if match >= .34:
+        return "Alta"
+    if match >= .16:
+        return "Parcial"
+    if match > 0:
+        return "Débil"
+    return "S/E"
+
+
+def _to_100(value: Any) -> float:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").fillna(0).iloc[0]
+    numeric = float(numeric)
+    return max(0.0, min(100.0, numeric * 10 if numeric <= 10 else numeric))
+
+
+def _document_year_score(records: pd.DataFrame) -> float:
+    if records.empty:
+        return 40.0
+    text = " ".join(records.get("file_name", pd.Series(dtype=str)).fillna("").astype(str).tolist())
+    years = [int(year) for year in re.findall(r"\b(20\d{2})\b", text)]
+    year = max(years) if years else 2024
+    return 100.0 if year >= 2026 else 80.0 if year == 2025 else 60.0 if year == 2024 else 40.0
+
+
+def _actionability_score(input_type: Any) -> float:
+    value = str(input_type or "").casefold()
+    if any(term in value for term in ("nota", "nueva", "ajuste")):
+        return 90.0
+    if "seguimiento" in value:
+        return 60.0
+    return 45.0
+
+
+def _recommendation(coverage: str, relevance: float, evidence: float) -> str:
+    if evidence < 25:
+        return "Seguimiento"
+    if coverage in {"Brecha", "S/E"} and relevance >= 70:
+        return "Nueva iniciativa / nota técnica"
+    if coverage == "Parcial" and relevance >= 70:
+        return "Nota técnica / ajuste a actividad existente"
+    if coverage == "Alta relación" and evidence >= 50:
+        return "Alimentar lineamiento existente"
+    return "Seguimiento"
+
+
+def build_document_policy_alignment(trends: pd.DataFrame, records: pd.DataFrame, signals: pd.DataFrame, activities: pd.DataFrame) -> pd.DataFrame:
+    if trends.empty or activities.empty:
+        return _empty_frame(DOCUMENT_POLICY_ALIGNMENT_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for _, trend in trends.iterrows():
+        topic = _text(trend, "tema_macro") or _text(trend, "tema_asociado")
+        trend_name = _text(trend, "nombre_tendencia") or topic
+        topic_records = records[records.get("tema_estrategico", pd.Series(dtype=str)).fillna("").astype(str) == topic] if "tema_estrategico" in records.columns else pd.DataFrame()
+        support_documents = topic_records.get("file_name", pd.Series(dtype=str)).dropna().astype(str).loc[lambda s: s.str.len() > 0].drop_duplicates().head(8).tolist()
+        support_sources = topic_records.get("source_folder", pd.Series(dtype=str)).dropna().astype(str).loc[lambda s: s.str.len() > 0].drop_duplicates().head(6).tolist()
+        trend_terms = _keyword_set(trend_name, topic, _text(trend, "de_que_trata"), _text(trend, "que_esta_pasando"), _text(trend, "implicacion_regulatoria"))
+        candidates: list[tuple[float, pd.Series]] = []
+        for _, activity in activities.iterrows():
+            activity_terms = _keyword_set(_text(activity, "policy_name"), _text(activity, "policy_axis"), _text(activity, "activity_name"), _text(activity, "activity_description"), _text(activity, "keywords"))
+            candidates.append((_match_ratio(trend_terms, activity_terms), activity))
+        for match, activity in sorted(candidates, key=lambda item: item[0], reverse=True)[:3]:
+            coverage = _coverage_from_match(match)
+            relevance = _to_100(trend.get("relevancia_score_promedio", 0))
+            evidence = min(100.0, len(support_documents) * 20.0)
+            recency = _document_year_score(topic_records)
+            gap = max(0.0, (100.0 - match * 100.0) if relevance >= 60 else 45.0)
+            actionability = _actionability_score(trend.get("tipo_insumo_principal", ""))
+            opportunity = round(.30 * relevance + .25 * gap + .20 * evidence + .15 * recency + .10 * actionability, 2)
+            rows.append({
+                "alignment_id": f"DOC-POL-{len(rows) + 1:04d}",
+                "trend_name": trend_name,
+                "topic_macro": topic,
+                "support_documents": " | ".join(support_documents),
+                "support_sources": " | ".join(support_sources),
+                "policy_activity_id": _text(activity, "activity_id"),
+                "policy_name": _text(activity, "policy_name"),
+                "policy_activity_name": _text(activity, "activity_name"),
+                "coverage_status": coverage,
+                "documentary_evidence": _text(trend, "que_esta_pasando") or f"{len(support_documents)} documentos asociados al tema {topic}.",
+                "recommendation": _recommendation(coverage, relevance, evidence),
+                "opportunity_score": max(0.0, min(100.0, opportunity)),
+                "score_label": _score_label_100(opportunity),
+            })
+    return pd.DataFrame(rows, columns=DOCUMENT_POLICY_ALIGNMENT_COLUMNS)
+
+
+def build_pmge_policy_alignment(projects: pd.DataFrame, activities: pd.DataFrame) -> pd.DataFrame:
+    if projects.empty or activities.empty:
+        return _empty_frame(PMGE_POLICY_ALIGNMENT_COLUMNS)
+    rows: list[dict[str, Any]] = []
+    for _, project in projects.iterrows():
+        project_terms = _keyword_set(_text(project, "pmge_line"), _text(project, "project_name"), _text(project, "project_description"), _text(project, "expected_output"), _text(project, "keywords"))
+        candidates: list[tuple[float, pd.Series]] = []
+        for _, activity in activities.iterrows():
+            activity_terms = _keyword_set(_text(activity, "policy_name"), _text(activity, "policy_axis"), _text(activity, "activity_name"), _text(activity, "activity_description"), _text(activity, "keywords"))
+            candidates.append((_match_ratio(project_terms, activity_terms), activity))
+        for match, activity in sorted(candidates, key=lambda item: item[0], reverse=True)[:3]:
+            temporal = 80.0 if _text(project, "timeframe") and _text(activity, "execution_period") else 60.0
+            thematic = match * 100.0
+            objectives = 90.0 if _text(project, "pmge_line") and _text(activity, "policy_axis") and _match_ratio(_keyword_set(project.get("pmge_line")), _keyword_set(activity.get("policy_axis"))) > 0 else max(35.0, thematic * .75)
+            relation = max(25.0, thematic)
+            implementation = 80.0 if _text(activity, "responsible_area") or _text(project, "expected_output") else 55.0
+            score = round(.35 * thematic + .25 * objectives + .20 * relation + .10 * temporal + .10 * implementation, 2)
+            level = _alignment_from_match(match)
+            rows.append({
+                "alignment_id": f"PMGE-POL-{len(rows) + 1:04d}",
+                "project_id": _text(project, "project_id"),
+                "source_document": _text(project, "source_document"),
+                "pmge_line": _text(project, "pmge_line"),
+                "project_name": _text(project, "project_name"),
+                "policy_activity_id": _text(activity, "activity_id"),
+                "policy_name": _text(activity, "policy_name"),
+                "policy_activity_name": _text(activity, "activity_name"),
+                "alignment_level": level,
+                "observation": f"Coincidencia semántica por {', '.join(sorted(project_terms.intersection(_keyword_set(activity.get('activity_name'), activity.get('activity_description'), activity.get('keywords'))))[:4]) or 'temas generales de gestión del espectro'}.",
+                "suggested_action": "Articular cronograma y entregables" if level in {"Alta", "Parcial"} else "Revisar alcance o mantener seguimiento",
+                "alignment_score": max(0.0, min(100.0, score)),
+                "score_label": _score_label_100(score),
+            })
+    return pd.DataFrame(rows, columns=PMGE_POLICY_ALIGNMENT_COLUMNS)
+
+
 def build_dashboard_data() -> dict[str, Any]:
     if not INPUT_CSV.exists(): raise FileNotFoundError(f"No existe {INPUT_CSV}. Primero ejecute: python app/llm_extract.py")
-    STRUCTURED_DATA_DIR.mkdir(parents=True, exist_ok=True); DEMO_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STRUCTURED_DATA_DIR.mkdir(parents=True, exist_ok=True); DEMO_DATA_DIR.mkdir(parents=True, exist_ok=True); REFERENCE_DATA_DIR.mkdir(parents=True, exist_ok=True)
     source = pd.read_csv(INPUT_CSV, dtype=str, keep_default_na=False)
     records = pd.DataFrame([_make_record(row) for _, row in source.iterrows()])
     serializable = records.copy()
@@ -208,10 +551,20 @@ def build_dashboard_data() -> dict[str, Any]:
     matrices = [("tema_estrategico", "source_folder", OUTPUT_NAMES[7], False, False), ("tema_estrategico", "tecnologias", OUTPUT_NAMES[8], False, True), ("bandas_frecuencia", "tecnologias", OUTPUT_NAMES[9], True, True), ("tema_estrategico", "tipo_insumo_agenda", OUTPUT_NAMES[10], False, False), ("tema_estrategico", "relevancia_label", OUTPUT_NAMES[11], False, False)]
     for row_col, col_col, name, row_list, col_list in matrices: _write_matrix(records, row_col, col_col, STRUCTURED_DATA_DIR / name, row_list, col_list)
     signals = _build_signals(records); signals.to_csv(STRUCTURED_DATA_DIR / OUTPUT_NAMES[1], index=False, encoding="utf-8-sig")
-    build_regulatory_map(records).to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_map.csv", index=False, encoding="utf-8-sig")
-    build_regulatory_trends(records).to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_trends.csv", index=False, encoding="utf-8-sig")
+    regulatory_map = build_regulatory_map(records)
+    regulatory_trends = build_regulatory_trends(records)
+    regulatory_map.to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_map.csv", index=False, encoding="utf-8-sig")
+    regulatory_trends.to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_trends.csv", index=False, encoding="utf-8-sig")
+    policy_activities = build_policy_matrix_activities()
+    pmge_projects = build_pmge_projects()
+    document_alignment = build_document_policy_alignment(regulatory_trends, records, signals, policy_activities)
+    pmge_alignment = build_pmge_policy_alignment(pmge_projects, policy_activities)
+    policy_activities.to_csv(STRUCTURED_DATA_DIR / "policy_matrix_activities.csv", index=False, encoding="utf-8-sig")
+    pmge_projects.to_csv(STRUCTURED_DATA_DIR / "pmge_projects.csv", index=False, encoding="utf-8-sig")
+    document_alignment.to_csv(STRUCTURED_DATA_DIR / "dashboard_document_policy_alignment.csv", index=False, encoding="utf-8-sig")
+    pmge_alignment.to_csv(STRUCTURED_DATA_DIR / "dashboard_pmge_policy_alignment.csv", index=False, encoding="utf-8-sig")
     for name in OUTPUT_NAMES: shutil.copy2(STRUCTURED_DATA_DIR / name, DEMO_DATA_DIR / name)
-    return {"records_processed": len(records), "strategic_topics": records["tema_estrategico"].nunique(), "signals_generated": len(signals), "files_copied": len(OUTPUT_NAMES), "demo_data_dir": DEMO_DATA_DIR}
+    return {"records_processed": len(records), "strategic_topics": records["tema_estrategico"].nunique(), "signals_generated": len(signals), "policy_activities": len(policy_activities), "pmge_projects": len(pmge_projects), "files_copied": len(OUTPUT_NAMES), "demo_data_dir": DEMO_DATA_DIR}
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

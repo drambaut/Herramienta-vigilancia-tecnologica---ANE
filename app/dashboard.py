@@ -28,7 +28,9 @@ DEMO_FILES = [
     "dashboard_tema_fuente_matrix.csv", "dashboard_tema_tecnologia_matrix.csv",
     "dashboard_banda_tecnologia_matrix.csv", "dashboard_tema_tipo_insumo_matrix.csv",
     "dashboard_tema_relevancia_matrix.csv", "dashboard_regulatory_map.csv",
-    "dashboard_regulatory_trends.csv",
+    "dashboard_regulatory_trends.csv", "policy_matrix_activities.csv",
+    "pmge_projects.csv", "dashboard_document_policy_alignment.csv",
+    "dashboard_pmge_policy_alignment.csv",
 ]
 LIST_COLUMNS = {
     "tecnologias", "bandas_frecuencia", "paises_regiones", "organizaciones",
@@ -163,10 +165,29 @@ h3 {{ font-size:.9rem !important; margin:.15rem 0 .65rem !important; }}
 .trend-field {{ margin:.62rem 0; color:#4A4F5A; font-size:.75rem; line-height:1.42; }}
 .trend-field b {{ display:block; margin-bottom:.12rem; color:#31333F; font-size:.7rem; }}
 .trend-footer {{ display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.8rem; padding-top:.7rem; border-top:1px solid #f0f1f3; }}
+.doc-pill {{ display:inline-block; max-width:190px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle; border-radius:999px; background:#EDEFF3; color:#59606b; padding:.16rem .45rem; margin:.08rem .12rem .08rem 0; font-size:.62rem; font-weight:700; white-space:nowrap; }}
+.align-source-note {{ display:inline-block; margin:.15rem 0 1rem; border-radius:999px; background:#f5f6f8; color:var(--muted); padding:.28rem .7rem; font-size:.72rem; font-weight:700; }}
+.align-filterbar {{ margin:.3rem 0 1rem; padding:.72rem .85rem .1rem; border:1px solid var(--border); border-radius:10px; background:#fafbfc; }}
+.align-table-wrap {{ width:100%; overflow:auto; border:1px solid var(--border); border-radius:10px; background:#fff; }}
+.align-table {{ width:100%; min-width:1180px; border-collapse:collapse; font-size:.72rem; }}
+.align-table th {{ padding:.62rem .55rem; color:var(--muted); font-size:.61rem; letter-spacing:.04em; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; }}
+.align-table td {{ padding:.68rem .55rem; color:#31333F; border-bottom:1px solid #f0f1f3; vertical-align:top; line-height:1.35; }}
+.align-table tr:last-child td {{ border-bottom:0; }}
+.align-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; margin-top:.7rem; }}
+.align-card {{ border:1px solid var(--border); border-radius:10px; background:#fff; padding:1rem 1.05rem; min-width:0; }}
+.align-card h4 {{ margin:.4rem 0 .65rem; color:#31333F; font-size:.9rem; line-height:1.25; }}
+.align-field {{ margin:.5rem 0; color:#4A4F5A; font-size:.74rem; line-height:1.38; }}
+.align-field b {{ display:block; color:#31333F; font-size:.68rem; margin-bottom:.12rem; }}
+.weight-row {{ display:flex; align-items:center; gap:.7rem; margin:.52rem 0; }}
+.weight-row .w-lbl {{ width:210px; min-width:210px; font-size:.72rem; color:#31333F; }}
+.weight-row .w-bar {{ flex:1; height:10px; background:#f1f2f4; border-radius:999px; overflow:hidden; }}
+.weight-row .w-fill {{ height:100%; border-radius:999px; background:{COLOR_ACCENT}; }}
+.weight-row .w-pct {{ width:36px; text-align:right; font-size:.72rem; font-weight:800; }}
+.hm-status-alta {{ background:#1F9C5C; color:#fff; }} .hm-status-parcial {{ background:#E08E29; color:#fff; }} .hm-status-brecha {{ background:#D64545; color:#fff; }} .hm-status-se {{ background:#EDEFF3; color:#8a8d97; }}
 @media (max-width:700px) {{ .insumo-mini-row {{ align-items:flex-start; display:grid; grid-template-columns:1fr 42px; gap:.35rem .5rem; }} .insumo-mini-label {{ width:100%; min-width:0; grid-column:1 / -1; }} .insumo-mini-scale {{ width:100%; }} .insumo-mini-total {{ width:42px; min-width:42px; }} }}
 div[data-testid="stBarChart"], div[data-testid="stVegaLiteChart"] {{ max-height:390px; }}
 @media (max-width:1200px) {{ .metric-grid {{ grid-template-columns:repeat(3,minmax(0,1fr)); }} .metric-grid.panorama-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
-@media (max-width:700px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .trend-grid {{ grid-template-columns:1fr; }} .block-container {{ padding-top:1rem; }} }}
+@media (max-width:700px) {{ .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .trend-grid,.align-grid {{ grid-template-columns:1fr; }} .block-container {{ padding-top:1rem; }} }}
 </style>
 """
 
@@ -247,6 +268,61 @@ def render_card_end() -> None:
 def render_badge(text: Any, kind: str) -> str:
     safe_kind = "".join(char for char in str(kind).casefold() if char.isalnum() or char == "-")
     return f'<span class="badge badge-{safe_kind}">{html.escape(str(text))}</span>'
+
+
+def render_doc_pills(value: Any, max_docs: int = 3) -> str:
+    docs = [item.strip() for item in re.split(r"\s*\|\s*|,\s*", str(value or "")) if item.strip()]
+    if not docs:
+        return "—"
+    shown = "".join(
+        f'<span class="doc-pill" title="{html.escape(doc, quote=True)}">{html.escape(shorten_label(doc, 34))}</span>'
+        for doc in docs[:max_docs]
+    )
+    extra = len(docs) - max_docs
+    return shown + (f'<span class="doc-pill">+{extra} docs</span>' if extra > 0 else "")
+
+
+def render_html_table(dataframe: pd.DataFrame, columns: list[tuple[str, str]], empty_text: str = "No hay datos para los filtros actuales.") -> str:
+    if dataframe.empty:
+        content = f'<div class="raw-empty">{html.escape(empty_text)}</div>'
+        st.markdown(content, unsafe_allow_html=True)
+        return content
+    headers = "".join(f"<th>{html.escape(label)}</th>" for _, label in columns)
+    rows: list[str] = []
+    for _, row in dataframe.iterrows():
+        cells: list[str] = []
+        for column, _ in columns:
+            value = row.get(column, "—")
+            if column in {"support_documents"}:
+                rendered = render_doc_pills(value)
+            elif column in {"coverage_status", "alignment_level", "recommendation", "suggested_action", "score_label"}:
+                rendered = render_badge(value or "—", _badge_kind(value))
+            elif column in {"opportunity_score", "alignment_score"}:
+                rendered = f"<strong>{float(pd.to_numeric(pd.Series([value]), errors='coerce').fillna(0).iloc[0]):.1f}</strong>"
+            else:
+                rendered = html.escape(shorten_label(str(value or "—"), 140))
+            cells.append(f"<td>{rendered}</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    content = f'<div class="align-table-wrap"><table class="align-table"><thead><tr>{headers}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    st.markdown(content, unsafe_allow_html=True)
+    return content
+
+
+def _badge_kind(value: Any) -> str:
+    text = str(value or "").casefold()
+    if any(term in text for term in ("alta", "existente")):
+        return "high"
+    if any(term in text for term in ("parcial", "media", "ajuste")):
+        return "medium"
+    if any(term in text for term in ("brecha", "débil", "debil", "baja")):
+        return "low"
+    if "nota" in text:
+        return "note"
+    return "follow"
+
+
+def short_label(value: Any, max_len: int = 28) -> str:
+    return shorten_label(str(value or ""), max_len)
 
 
 def parse_list(value: Any) -> list[str]:
@@ -1130,6 +1206,137 @@ def _render_raw_data(records: pd.DataFrame) -> None:
     st.markdown(f'<div class="raw-footnote">{len(displayed)} filas filtradas · datos procesados para demo · sin documentos fuente incluidos</div>', unsafe_allow_html=True)
 
 
+def _filter_options(frame: pd.DataFrame, column: str) -> list[str]:
+    if frame.empty or column not in frame.columns:
+        return []
+    return sorted(frame[column].fillna("").astype(str).loc[lambda s: s.str.len() > 0].unique(), key=str.casefold)
+
+
+def _apply_alignment_filters(frame: pd.DataFrame, selections: dict[str, Any]) -> pd.DataFrame:
+    filtered = frame.copy()
+    for column, selected in selections.items():
+        if column == "min_score" or column not in filtered.columns or not selected:
+            continue
+        choices = {str(item).casefold() for item in selected}
+        filtered = filtered[filtered[column].fillna("").astype(str).str.casefold().isin(choices)]
+    score_column = "opportunity_score" if "opportunity_score" in filtered.columns else "alignment_score"
+    if score_column in filtered.columns:
+        filtered[score_column] = pd.to_numeric(filtered[score_column], errors="coerce").fillna(0)
+        filtered = filtered[filtered[score_column] >= float(selections.get("min_score", 0))]
+    return filtered.reset_index(drop=True)
+
+
+def render_categorical_heatmap(frame: pd.DataFrame, row_col: str, col_col: str, value_col: str, title: str, note: str, max_rows: int = 8, max_cols: int = 8) -> str:
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        if frame.empty or not {row_col, col_col, value_col}.issubset(frame.columns):
+            st.info("No hay datos para construir el heatmap.")
+            return ""
+        score_col = "opportunity_score" if "opportunity_score" in frame.columns else "alignment_score"
+        working = frame.copy()
+        working[score_col] = pd.to_numeric(working[score_col], errors="coerce").fillna(0)
+        rows = working.groupby(row_col)[score_col].max().sort_values(ascending=False).head(max_rows).index.tolist()
+        cols = working.groupby(col_col)[score_col].max().sort_values(ascending=False).head(max_cols).index.tolist()
+        pivot = working.sort_values(score_col, ascending=False).drop_duplicates([row_col, col_col]).set_index([row_col, col_col])[value_col]
+        headers = "".join(f'<th title="{html.escape(str(col), quote=True)}">{html.escape(short_label(col, 18))}</th>' for col in cols)
+        class_map = {"Alta relación": "hm-status-alta", "Alta": "hm-status-alta", "Parcial": "hm-status-parcial", "Brecha": "hm-status-brecha", "Débil": "hm-status-brecha", "S/E": "hm-status-se"}
+        body: list[str] = []
+        for row in rows:
+            cells = []
+            for col in cols:
+                status = pivot.get((row, col), "S/E")
+                cells.append(f'<td class="{class_map.get(str(status), "hm-status-se")}" title="{html.escape(str(row), quote=True)} × {html.escape(str(col), quote=True)}">{html.escape(short_label(status, 12))}</td>')
+            body.append(f'<tr><th class="row-label" title="{html.escape(str(row), quote=True)}">{html.escape(short_label(row, 24))}</th>{"".join(cells)}</tr>')
+        content = f'<div class="heatmap-scroll"><table class="html-heatmap"><thead><tr><th></th>{headers}</tr></thead><tbody>{"".join(body)}</tbody></table></div><div class="heatmap-note">{html.escape(note)}</div>'
+        st.markdown(content, unsafe_allow_html=True)
+        return content
+
+
+def render_alignment_ranking(frame: pd.DataFrame, group_col: str, score_col: str, title: str) -> go.Figure | None:
+    with st.container(border=True):
+        st.markdown(f"### {title}")
+        if frame.empty or not {group_col, score_col}.issubset(frame.columns):
+            st.info("No hay datos para el ranking.")
+            return None
+        summary = frame.copy()
+        summary[score_col] = pd.to_numeric(summary[score_col], errors="coerce").fillna(0)
+        summary = summary.groupby(group_col, dropna=False)[score_col].max().sort_values(ascending=True).tail(8).reset_index()
+        fig = go.Figure(go.Bar(x=summary[score_col], y=[short_label(value, 34) for value in summary[group_col]], orientation="h", marker={"color": COLOR_BLUE}, customdata=summary[group_col], hovertemplate="<b>%{customdata}</b><br>Score: %{x:.1f}<extra></extra>"))
+        fig.update_layout(height=330, margin={"l": 20, "r": 20, "t": 8, "b": 30}, paper_bgcolor="white", plot_bgcolor="white", xaxis={"range": [0, 100], "gridcolor": "#eef0f3"}, yaxis={"title": ""}, showlegend=False, font={"size": 11, "color": "#31333F"})
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        return fig
+
+
+def render_methodology_card(title: str, weights: list[tuple[str, int]]) -> str:
+    rows = "".join(f'<div class="weight-row"><div class="w-lbl">{html.escape(label)}</div><div class="w-bar"><div class="w-fill" style="width:{weight}%"></div></div><div class="w-pct">{weight}%</div></div>' for label, weight in weights)
+    content = f'<div class="align-card"><h4>{html.escape(title)}</h4>{rows}</div>'
+    st.markdown(content, unsafe_allow_html=True)
+    return content
+
+
+def render_document_opportunity_cards(frame: pd.DataFrame) -> str:
+    rows = []
+    for _, row in frame.sort_values("opportunity_score", ascending=False).head(4).iterrows():
+        rows.append('<div class="align-card">' + f'<div>{render_badge(row.get("score_label", ""), _badge_kind(row.get("score_label", "")))}</div><h4>{html.escape(str(row.get("policy_activity_name", "—")))}</h4>' + f'<div class="align-field"><b>Política pública / matriz</b>{html.escape(str(row.get("policy_name", "—")))}</div><div class="align-field"><b>Tendencia documental que la alimenta</b>{html.escape(str(row.get("trend_name", "—")))}</div><div class="align-field"><b>Documentos soporte</b>{render_doc_pills(row.get("support_documents", ""))}</div><div class="align-field"><b>Evidencia encontrada en el repo</b>{html.escape(shorten_label(str(row.get("documentary_evidence", "—")), 260))}</div><div class="align-field"><b>Qué debería ajustarse o profundizarse</b>{html.escape(str(row.get("coverage_status", "—")))}</div><div class="align-field"><b>Recomendación</b>{render_badge(row.get("recommendation", "—"), _badge_kind(row.get("recommendation", "")))}</div><div class="align-field"><b>Score</b>{float(row.get("opportunity_score", 0)):.1f}</div></div>')
+    content = '<div class="align-grid">' + "".join(rows) + "</div>" if rows else '<div class="raw-empty">No hay oportunidades priorizadas.</div>'
+    st.markdown(content, unsafe_allow_html=True)
+    return content
+
+
+def render_pmge_priority_cards(frame: pd.DataFrame) -> str:
+    rows = []
+    for _, row in frame.sort_values("alignment_score", ascending=False).head(4).iterrows():
+        rows.append('<div class="align-card">' + f'<div>{render_badge(row.get("alignment_level", ""), _badge_kind(row.get("alignment_level", "")))}</div><h4>{html.escape(str(row.get("project_name", "—")))}</h4>' + f'<div class="align-field"><b>Documento fuente</b>{html.escape(str(row.get("source_document", "—")))}</div><div class="align-field"><b>Política pública / actividad matriz</b>{html.escape(str(row.get("policy_name", "—")))} / {html.escape(str(row.get("policy_activity_name", "—")))}</div><div class="align-field"><b>Línea temática PMGE</b>{html.escape(str(row.get("pmge_line", "—")))}</div><div class="align-field"><b>Por qué se relacionan</b>{html.escape(str(row.get("observation", "—")))}</div><div class="align-field"><b>Qué refuerza / qué podría complementarse</b>{html.escape(str(row.get("alignment_level", "—")))}</div><div class="align-field"><b>Acción sugerida</b>{render_badge(row.get("suggested_action", "—"), _badge_kind(row.get("suggested_action", "")))}</div><div class="align-field"><b>Score</b>{float(row.get("alignment_score", 0)):.1f}</div></div>')
+    content = '<div class="align-grid">' + "".join(rows) + "</div>" if rows else '<div class="raw-empty">No hay proyectos priorizados.</div>'
+    st.markdown(content, unsafe_allow_html=True)
+    return content
+
+
+def _render_document_policy_alignment(frame: pd.DataFrame) -> None:
+    st.markdown('<div class="align-source-note">Fuente: documentos del repositorio de vigilancia (Cullen Intl. · CRC · UIT/CITEL) — no incluye PMGE</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        cols = st.columns([1, 1, 1, 1, .9], gap="medium")
+        selections = {"trend_name": cols[0].multiselect("Tendencia documental", _filter_options(frame, "trend_name"), key="doc_align_trend"), "policy_activity_name": cols[1].multiselect("Actividad de política pública", _filter_options(frame, "policy_activity_name"), key="doc_align_activity"), "coverage_status": cols[2].multiselect("Estado de cobertura", _filter_options(frame, "coverage_status"), key="doc_align_status"), "recommendation": cols[3].multiselect("Recomendación", _filter_options(frame, "recommendation"), key="doc_align_reco"), "min_score": cols[4].slider("Score mínimo", 0, 100, 0, key="doc_align_score")}
+    filtered = _apply_alignment_filters(frame, selections)
+    metrics = [("Tendencias documentales cruzadas", filtered.get("trend_name", pd.Series(dtype=str)).nunique()), ("Actividades de matriz impactadas", filtered.get("policy_activity_id", pd.Series(dtype=str)).nunique()), ("Oportunidades altas", int((filtered.get("score_label", pd.Series(dtype=str)) == "Alta").sum())), ("Brechas documentales", int(filtered.get("coverage_status", pd.Series(dtype=str)).isin(["Brecha", "S/E"]).sum()))]
+    st.markdown('<div class="metric-grid panorama-grid">' + "".join(render_metric_card(label, value) for label, value in metrics) + "</div>", unsafe_allow_html=True)
+    render_categorical_heatmap(filtered, "trend_name", "policy_activity_name", "coverage_status", "Cobertura documental frente a actividades de política pública", "Eje Y: trend_name o topic_macro. Eje X: policy_activity_name abreviado.")
+    render_alignment_ranking(filtered, "policy_activity_name", "opportunity_score", "Top actividades de política que pueden alimentarse con vigilancia documental")
+    render_section_title("Lectura de oportunidad documental", f"{len(filtered)} cruces")
+    render_html_table(filtered, [("trend_name", "Tendencia documental"), ("support_documents", "Documentos soporte"), ("policy_activity_name", "Política / actividad de matriz"), ("coverage_status", "Estado de cobertura"), ("documentary_evidence", "Evidencia documental"), ("recommendation", "Recomendación"), ("opportunity_score", "Score")])
+    render_section_title("Oportunidades priorizadas")
+    render_document_opportunity_cards(filtered)
+    render_section_title("Cómo se calcula el score")
+    render_methodology_card("Score de oportunidad documental", [("relevancia_tendencia_documental", 30), ("brecha_actividad_politica", 25), ("evidencia_acumulada", 20), ("recencia_actualidad", 15), ("accionabilidad_regulatoria", 10)])
+
+
+def _render_pmge_policy_alignment(frame: pd.DataFrame) -> None:
+    st.markdown('<div class="align-source-note">Fuente: proyectos del PMGE / Agenda Regulatoria</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        cols = st.columns([1, 1, 1, 1, .9], gap="medium")
+        selections = {"project_name": cols[0].multiselect("Proyecto PMGE / Agenda", _filter_options(frame, "project_name"), key="pmge_align_project"), "policy_activity_name": cols[1].multiselect("Actividad de matriz", _filter_options(frame, "policy_activity_name"), key="pmge_align_activity"), "pmge_line": cols[2].multiselect("Línea temática PMGE", _filter_options(frame, "pmge_line"), key="pmge_align_line"), "alignment_level": cols[3].multiselect("Nivel de alineación", _filter_options(frame, "alignment_level"), key="pmge_align_level"), "min_score": cols[4].slider("Temporalidad / score mínimo", 0, 100, 0, key="pmge_align_score")}
+    filtered = _apply_alignment_filters(frame, selections)
+    metrics = [("Proyectos PMGE cruzados", filtered.get("project_id", pd.Series(dtype=str)).nunique()), ("Actividades de matriz relacionadas", filtered.get("policy_activity_id", pd.Series(dtype=str)).nunique()), ("Alta alineación", int((filtered.get("alignment_level", pd.Series(dtype=str)) == "Alta").sum())), ("Posibles vacíos", int(filtered.get("alignment_level", pd.Series(dtype=str)).isin(["Débil", "S/E"]).sum()))]
+    st.markdown('<div class="metric-grid panorama-grid">' + "".join(render_metric_card(label, value) for label, value in metrics) + "</div>", unsafe_allow_html=True)
+    render_categorical_heatmap(filtered, "project_name", "policy_activity_name", "alignment_level", "Alineación entre proyectos PMGE y actividades de política pública", "Los nombres completos de proyectos, documentos fuente y actividades de matriz se detallan en la tabla inferior.")
+    render_alignment_ranking(filtered, "project_name", "alignment_score", "Proyectos PMGE con mayor alineación con la matriz")
+    render_section_title("Cruce proyecto PMGE vs actividad de política", f"{len(filtered)} cruces")
+    render_html_table(filtered, [("project_name", "Proyecto PMGE / Agenda"), ("source_document", "Documento fuente"), ("policy_activity_name", "Política / actividad de matriz"), ("pmge_line", "Línea temática PMGE"), ("alignment_level", "Nivel"), ("observation", "Observación"), ("suggested_action", "Acción sugerida"), ("alignment_score", "Score")])
+    render_section_title("Proyectos priorizados")
+    render_pmge_priority_cards(filtered)
+    render_section_title("Cómo se calcula el score")
+    render_methodology_card("Score de alineación institucional", [("coincidencia_tematica", 35), ("coincidencia_objetivos", 25), ("relacion_actividades_matriz", 20), ("temporalidad_compatible", 10), ("potencial_implementacion", 10)])
+
+
+def _render_strategic_alignment(data: dict[str, pd.DataFrame]) -> None:
+    st.markdown("## Alineación estratégica")
+    subtabs = st.tabs(["Vigilancia documental × Matriz de políticas", "PMGE / Agenda × Matriz de políticas"])
+    with subtabs[0]:
+        _render_document_policy_alignment(data.get("dashboard_document_policy_alignment", pd.DataFrame()))
+    with subtabs[1]:
+        _render_pmge_policy_alignment(data.get("dashboard_pmge_policy_alignment", pd.DataFrame()))
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Vigilancia Tecnológica ANE",
@@ -1150,12 +1357,13 @@ def main() -> None:
         render_metric_card("Registros visibles", len(filtered)),
         unsafe_allow_html=True,
     )
-    tabs = st.tabs(["Panorama estratégico", "Inteligencia regulatoria", "Señales emergentes y oportunidades", "Cruces analíticos", "Base procesada"])
+    tabs = st.tabs(["Panorama estratégico", "Inteligencia regulatoria", "Señales emergentes y oportunidades", "Cruces analíticos", "Alineación estratégica", "Base procesada"])
     with tabs[0]: _render_panorama(filtered)
     with tabs[1]: _render_regulatory_intelligence(filtered)
     with tabs[2]: _render_signals(filtered)
     with tabs[3]: _render_crosses(filtered)
-    with tabs[4]: _render_raw_data(filtered)
+    with tabs[4]: _render_strategic_alignment(data)
+    with tabs[5]: _render_raw_data(filtered)
 
 if __name__ == "__main__":
     main()
