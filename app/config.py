@@ -1,39 +1,41 @@
-"""Configuración central de rutas del proyecto."""
+"""Capa de compatibilidad para la configuracion legacy del MVP."""
 
-import os
+from __future__ import annotations
+
 from pathlib import Path
 
-from dotenv import load_dotenv
+from app.core.settings import load_settings
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+_settings = load_settings()
+
+PROJECT_ROOT = _settings.project_root
+DATA_DIR = _settings.data_dir
+OUTPUT_DIR = _settings.output_dir
+EXTRACTED_TEXT_DIR = _settings.extracted_text_dir
+STRUCTURED_DATA_DIR = _settings.structured_data_dir
+FIGURES_DIR = _settings.figures_dir
+LOGS_DIR = _settings.logs_dir
+
+LLM_PROVIDER = _settings.llm_provider
+GEMINI_API_KEY = _settings.gemini_api_key
+GEMINI_MODEL = _settings.gemini_model
+OPENAI_API_KEY = _settings.openai_api_key
+OPENAI_MODEL = _settings.openai_model
+SUPABASE_URL = _settings.supabase_url
+SUPABASE_KEY = _settings.supabase_key
 
 
-def _project_path(value: str) -> Path:
-    """Convierte una ruta relativa al proyecto en una ruta resuelta."""
-    path = Path(value).expanduser()
-    return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+def ensure_legacy_directories() -> None:
+    """Crea los directorios esperados por el pipeline actual basado en archivos."""
+    for directory in (
+        OUTPUT_DIR,
+        EXTRACTED_TEXT_DIR,
+        STRUCTURED_DATA_DIR,
+        FIGURES_DIR,
+        LOGS_DIR,
+    ):
+        Path(directory).mkdir(parents=True, exist_ok=True)
 
 
-DATA_DIR = _project_path(os.getenv("DATA_DIR", "../Vigilanciatecnologica_data"))
-OUTPUT_DIR = _project_path(os.getenv("OUTPUT_DIR", "outputs"))
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-EXTRACTED_TEXT_DIR = OUTPUT_DIR / "extracted_text"
-STRUCTURED_DATA_DIR = OUTPUT_DIR / "structured_data"
-FIGURES_DIR = OUTPUT_DIR / "figures"
-LOGS_DIR = OUTPUT_DIR / "logs"
-
-for directory in (
-    OUTPUT_DIR,
-    EXTRACTED_TEXT_DIR,
-    STRUCTURED_DATA_DIR,
-    FIGURES_DIR,
-    LOGS_DIR,
-):
-    directory.mkdir(parents=True, exist_ok=True)
+ensure_legacy_directories()
