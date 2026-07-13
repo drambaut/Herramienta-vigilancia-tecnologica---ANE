@@ -13,7 +13,7 @@ from app.contracts.validation import (
     validate_institutional_plan_extraction,
     validate_policy_matrix_extraction,
 )
-from app.llm.base import LLMClient
+from app.llm.base import LLMClient, LLMInput
 from app.llm.errors import InvalidContractError
 from app.llm.gemini_client import GeminiStructuredClient
 from app.prompting import load_prompt
@@ -47,16 +47,28 @@ class StructuredExtractionService:
     def __init__(self, client: LLMClient | None = None) -> None:
         self._client = client or GeminiStructuredClient()
 
-    def extract(self, *, prompt_id: str, version: str, content: str) -> ExtractionResult:
+    def extract(
+        self,
+        *,
+        prompt_id: str,
+        version: str,
+        input_data: LLMInput | str | None = None,
+        content: str | None = None,
+    ) -> ExtractionResult:
+        """Ejecuta extraccion.
+
+        Compatibilidad transitoria: content o input_data=str se convierten a LLMInput.
+        """
         spec, prompt = load_prompt(prompt_id, version)
         schema = SCHEMA_BY_CONTRACT.get(spec.contract)
         validator = VALIDATOR_BY_CONTRACT.get(spec.contract)
         if schema is None or validator is None:
             raise InvalidContractError(f"Contrato no soportado: {spec.contract}")
 
+        normalized_input = self._normalize_input(input_data, content)
         payload = self._client.generate_json(
             prompt=prompt,
-            content=content,
+            input_data=normalized_input,
             response_schema=schema,
         )
         validated = validator(payload)
@@ -67,3 +79,14 @@ class StructuredExtractionService:
             contract_name=spec.contract,
             model_name=self._client.model_name,
         )
+
+    def _normalize_input(
+        self, input_data: LLMInput | str | None, content: str | None
+    ) -> LLMInput:
+        if isinstance(input_data, LLMInput):
+            return input_data
+        if isinstance(input_data, str):
+            return LLMInput(text=input_data)
+        if content is not None:
+            return LLMInput(text=content)
+        return LLMInput()

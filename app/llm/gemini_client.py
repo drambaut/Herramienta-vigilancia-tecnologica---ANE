@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from app.core.settings import Settings, load_settings
+from app.llm.base import LLMInput
 from app.llm.errors import (
     EmptyLLMResponseError,
     InvalidLLMJSONError,
@@ -46,7 +47,7 @@ class GeminiStructuredClient:
         self,
         *,
         prompt: str,
-        content: str,
+        input_data: LLMInput,
         response_schema: Mapping[str, Any],
     ) -> dict[str, Any]:
         try:
@@ -54,7 +55,7 @@ class GeminiStructuredClient:
 
             response = self._get_client().models.generate_content(
                 model=self._settings.gemini_model,
-                contents=f"{prompt.rstrip()}\n\nCONTENIDO A ANALIZAR:\n{content}",
+                contents=self._build_contents(types, prompt, input_data),
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=dict(response_schema),
@@ -77,3 +78,28 @@ class GeminiStructuredClient:
         if not isinstance(parsed, dict):
             raise InvalidLLMJSONError("Gemini devolvio JSON valido pero no un objeto.")
         return parsed
+
+    def _build_contents(self, types: Any, prompt: str, input_data: LLMInput) -> list[Any]:
+        text = self._build_text_part(prompt, input_data)
+        parts = [types.Part.from_text(text=text)]
+        if input_data.file_bytes is not None:
+            parts.append(
+                types.Part.from_bytes(
+                    data=input_data.file_bytes,
+                    mime_type=input_data.mime_type or "application/octet-stream",
+                )
+            )
+        return parts
+
+    def _build_text_part(self, prompt: str, input_data: LLMInput) -> str:
+        metadata = "\n".join(
+            f"- {key}: {value}" for key, value in sorted(input_data.metadata.items())
+        )
+        sections = [prompt.rstrip()]
+        if metadata:
+            sections.append(f"METADATOS:\n{metadata}")
+        if input_data.file_name:
+            sections.append(f"ARCHIVO: {input_data.file_name}")
+        if input_data.text.strip():
+            sections.append(f"CONTENIDO A ANALIZAR:\n{input_data.text}")
+        return "\n\n".join(sections)

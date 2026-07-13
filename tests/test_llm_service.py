@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.settings import Settings
+from app.documents.models import DocumentChunk
+from app.llm.base import LLMInput
 from app.llm.errors import (
     EmptyLLMResponseError,
     InvalidLLMJSONError,
@@ -13,6 +15,7 @@ from app.llm.errors import (
     MissingConfigurationError,
 )
 from app.llm.gemini_client import GeminiStructuredClient
+from app.llm.input_builder import build_excel_input, build_pdf_input
 from app.llm.service import StructuredExtractionService
 
 
@@ -94,9 +97,15 @@ class FakeClient:
         self.payload = payload or document_payload()
         self.calls: list[dict] = []
 
-    def generate_json(self, *, prompt: str, content: str, response_schema: dict) -> dict:
+    def generate_json(
+        self, *, prompt: str, input_data: LLMInput, response_schema: dict
+    ) -> dict:
         self.calls.append(
-            {"prompt": prompt, "content": content, "response_schema": response_schema}
+            {
+                "prompt": prompt,
+                "input_data": input_data,
+                "response_schema": response_schema,
+            }
         )
         return self.payload
 
@@ -131,7 +140,7 @@ def test_service_selects_prompt_and_schema() -> None:
     assert result.model_name == "fake-model"
     assert client.calls[0]["response_schema"]["title"] == "DocumentExtraction"
     assert "JSON Schema DocumentExtraction" in client.calls[0]["prompt"]
-    assert client.calls[0]["content"] == "contenido"
+    assert client.calls[0]["input_data"].text == "contenido"
 
 
 @pytest.mark.parametrize(
@@ -158,6 +167,74 @@ def test_service_rejects_invalid_response() -> None:
         service.extract(prompt_id="document_extraction", version="v1", content="texto")
 
 
+def test_service_accepts_llm_input() -> None:
+    client = FakeClient(document_payload())
+    service = StructuredExtractionService(client=client)
+    input_data = LLMInput(text="texto estructurado", metadata={"source": "excel"})
+
+    service.extract(
+        prompt_id="document_extraction", version="v1", input_data=input_data
+    )
+
+    assert client.calls[0]["input_data"] == input_data
+
+
+def test_pdf_input_keeps_original_bytes_and_mime_type() -> None:
+    file_bytes = b"%PDF-original"
+    input_data = build_pdf_input(
+        file_name="doc.pdf",
+        file_bytes=file_bytes,
+        metadata={"document_id": "doc-1"},
+    )
+
+    assert input_data.file_bytes is file_bytes
+    assert input_data.mime_type == "application/pdf"
+    assert input_data.file_name == "doc.pdf"
+    assert input_data.metadata == {"document_id": "doc-1"}
+    assert "PDF original" in input_data.text
+
+
+def test_excel_input_does_not_send_binary_and_preserves_sheets_rows() -> None:
+    chunks = [
+        DocumentChunk(
+            id="2",
+            document_id="doc-1",
+            content="second",
+            page_number=None,
+            section_title=None,
+            sheet_name="Hoja B",
+            row_reference="5",
+            content_hash="h2",
+            position=2,
+        ),
+        DocumentChunk(
+            id="1",
+            document_id="doc-1",
+            content="first",
+            page_number=None,
+            section_title=None,
+            sheet_name="Hoja A",
+            row_reference="2",
+            content_hash="h1",
+            position=1,
+        ),
+    ]
+
+    input_data = build_excel_input(
+        file_name="book.xlsx",
+        chunks=chunks,
+        metadata={"document_id": "doc-1"},
+    )
+
+    assert input_data.file_bytes is None
+    assert input_data.file_name == "book.xlsx"
+    assert input_data.text.index("Hoja A") < input_data.text.index("Hoja B")
+    assert "ROW_REFERENCE: 2" in input_data.text
+    assert "ROW_REFERENCE: 5" in input_data.text
+    assert "first" in input_data.text
+    assert "second" in input_data.text
+
+
 def test_missing_prompt_fails() -> None:
     with pytest.raises(KeyError):
         StructuredExtractionService(client=FakeClient()).extract(
@@ -169,7 +246,9 @@ def test_gemini_missing_api_key_is_rejected() -> None:
     client = GeminiStructuredClient(settings=settings(api_key=""))
 
     with pytest.raises(MissingConfigurationError):
-        client.generate_json(prompt="p", content="c", response_schema={"type": "object"})
+        client.generate_json(
+            prompt="p", input_data=LLMInput(text="c"), response_schema={"type": "object"}
+        )
 
 
 def test_gemini_empty_response_is_rejected() -> None:
@@ -183,7 +262,9 @@ def test_gemini_empty_response_is_rejected() -> None:
     )
 
     with pytest.raises(EmptyLLMResponseError):
-        client.generate_json(prompt="p", content="c", response_schema={"type": "object"})
+        client.generate_json(
+            prompt="p", input_data=LLMInput(text="c"), response_schema={"type": "object"}
+        )
 
 
 def test_gemini_malformed_json_is_rejected() -> None:
@@ -197,7 +278,9 @@ def test_gemini_malformed_json_is_rejected() -> None:
     )
 
     with pytest.raises(InvalidLLMJSONError):
-        client.generate_json(prompt="p", content="c", response_schema={"type": "object"})
+        client.generate_json(
+            prompt="p", input_data=LLMInput(text="c"), response_schema={"type": "object"}
+        )
 
 
 def test_gemini_provider_error_is_wrapped() -> None:
@@ -210,7 +293,9 @@ def test_gemini_provider_error_is_wrapped() -> None:
     )
 
     with pytest.raises(LLMProviderError, match="boom"):
-        client.generate_json(prompt="p", content="c", response_schema={"type": "object"})
+        client.generate_json(
+            prompt="p", input_data=LLMInput(text="c"), response_schema={"type": "object"}
+        )
 
 
 def test_gemini_client_is_created_lazily() -> None:
@@ -228,8 +313,70 @@ def test_gemini_client_is_created_lazily() -> None:
     assert calls == []
 
     result = client.generate_json(
-        prompt="p", content="c", response_schema={"type": "object"}
+        prompt="p", input_data=LLMInput(text="c"), response_schema={"type": "object"}
     )
 
     assert result == {"ok": True}
     assert calls == ["fake-key"]
+
+
+def test_gemini_receives_text_metadata_and_pdf_part() -> None:
+    captured: dict = {}
+
+    def generate_content(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(text='{"ok": true}')
+
+    fake_google = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    client = GeminiStructuredClient(
+        settings=settings(), client_factory=lambda **kwargs: fake_google
+    )
+    input_data = build_pdf_input(
+        file_name="doc.pdf",
+        file_bytes=b"%PDF bytes",
+        metadata={"document_id": "doc-1"},
+    )
+
+    result = client.generate_json(
+        prompt="Prompt",
+        input_data=input_data,
+        response_schema={"type": "object"},
+    )
+
+    assert result == {"ok": True}
+    parts = captured["contents"]
+    assert len(parts) == 2
+    assert parts[0].text is not None
+    assert "document_id" in parts[0].text
+    assert "doc.pdf" in parts[0].text
+    assert parts[1].inline_data.mime_type == "application/pdf"
+    assert parts[1].inline_data.data == b"%PDF bytes"
+
+
+def test_gemini_excel_input_sends_only_text_and_metadata() -> None:
+    captured: dict = {}
+
+    def generate_content(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(text='{"ok": true}')
+
+    fake_google = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    client = GeminiStructuredClient(
+        settings=settings(), client_factory=lambda **kwargs: fake_google
+    )
+    input_data = LLMInput(
+        text="=== SHEET: Hoja ===\nROW_REFERENCE: 2",
+        metadata={"kind": "excel"},
+        file_name="book.xlsx",
+    )
+
+    client.generate_json(
+        prompt="Prompt",
+        input_data=input_data,
+        response_schema={"type": "object"},
+    )
+
+    parts = captured["contents"]
+    assert len(parts) == 1
+    assert "ROW_REFERENCE: 2" in parts[0].text
+    assert "kind" in parts[0].text
