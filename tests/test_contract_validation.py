@@ -9,6 +9,9 @@ from app.contracts.validation import (
     validate_document_extraction,
     validate_institutional_plan_extraction,
     validate_policy_matrix_extraction,
+    validate_regulatory_intelligence,
+    validate_strategic_assessment,
+    validate_thematic_landscape,
 )
 
 
@@ -164,6 +167,147 @@ def policy_payload() -> dict:
     }
 
 
+def thematic_payload() -> dict:
+    return {
+        "corpus_summary": "Resumen transversal.",
+        "themes": [
+            {
+                "temporary_id": "theme-1",
+                "name": "Conectividad rural",
+                "definition": "Tema abierto.",
+                "scope": "Corpus de vigilancia.",
+                "subthemes": [],
+                "technologies": ["5G"],
+                "frequency_bands": [],
+                "countries_regions": ["Colombia"],
+                "organizations": [],
+                "finding_ids": ["finding-id"],
+                "evidence_ids": ["ev-1"],
+                "change_action": "create",
+                "previous_topic_ids": [],
+                "confidence": "Alta",
+                "extraction_basis": "mixed",
+            }
+        ],
+        "trends": [
+            {
+                "temporary_id": "trend-1",
+                "name": "Mayor interes",
+                "description": "Descripcion.",
+                "related_theme_temporary_ids": ["theme-1"],
+                "direction": "growing",
+                "time_horizon": "medium_term",
+                "first_observed_date": None,
+                "latest_observed_date": None,
+                "countries_regions": [],
+                "organizations": [],
+                "finding_ids": ["finding-id"],
+                "evidence_ids": ["ev-1"],
+                "confidence": "Media",
+            }
+        ],
+        "emerging_signals": [
+            {
+                "temporary_id": "signal-1",
+                "title": "Senal",
+                "description": "Descripcion.",
+                "novelty_explanation": "Novedad.",
+                "related_theme_temporary_ids": ["theme-1"],
+                "finding_ids": ["finding-id"],
+                "evidence_ids": ["ev-1"],
+                "confidence": "Baja",
+            }
+        ],
+        "evidence_ids": ["ev-1"],
+    }
+
+
+def regulatory_payload() -> dict:
+    return {
+        "analyses": [
+            {
+                "temporary_id": "reg-1",
+                "theme_id": "theme-uuid",
+                "international_situation": "Situacion.",
+                "regulatory_debate": "Debate.",
+                "countries_regions": ["Brasil"],
+                "organizations": ["Regulador"],
+                "agenda_item_ids": ["agenda-uuid"],
+                "relationship_type": "partially_covered",
+                "coverage_explanation": "Cobertura parcial.",
+                "implications_for_ane": "Implicaciones.",
+                "finding_ids": ["finding-id"],
+                "evidence_ids": ["ev-1"],
+                "confidence": "Alta",
+                "extraction_basis": "mixed",
+            }
+        ],
+        "overall_gaps": [],
+        "evidence_ids": ["ev-1"],
+    }
+
+
+def strategic_payload() -> dict:
+    return {
+        "importance_assessments": [
+            {
+                "temporary_id": "importance-1",
+                "subject_type": "theme",
+                "subject_id": "theme-uuid",
+                "dimensions": {
+                    "ane_relevance": 5,
+                    "magnitude": 4,
+                    "urgency": 3,
+                    "evidence_strength": 4,
+                    "institutional_scope": 5,
+                },
+                "level": "Alta",
+                "rationale": "Justificacion.",
+                "evidence_ids": ["ev-1"],
+                "confidence": "Alta",
+            }
+        ],
+        "opportunity_assessments": [
+            {
+                "temporary_id": "opportunity-1",
+                "theme_id": "theme-uuid",
+                "policy_activity_ids": ["activity-uuid"],
+                "dimensions": {
+                    "policy_gap": 4,
+                    "institutional_relevance": 5,
+                    "actionability": 3,
+                    "evidence_maturity": 4,
+                    "timing": 3,
+                },
+                "level": "Media",
+                "rationale": "Justificacion.",
+                "suggested_action": "Accion sugerida.",
+                "evidence_ids": ["ev-1"],
+                "confidence": "Media",
+            }
+        ],
+        "alignment_assessments": [
+            {
+                "temporary_id": "alignment-1",
+                "theme_id": "theme-uuid",
+                "pmge_project_ids": ["project-uuid"],
+                "dimensions": {
+                    "objective_match": 4,
+                    "activity_match": 3,
+                    "deliverable_match": 3,
+                    "temporal_match": 2,
+                    "evidence_strength": 4,
+                },
+                "level": "Media",
+                "rationale": "Justificacion.",
+                "alignment_type": "partial",
+                "evidence_ids": ["ev-1"],
+                "confidence": "Alta",
+            }
+        ],
+    }
+
+
 def assert_invalid(payload: dict, validator, expected: str) -> str:
     with pytest.raises(ContractValidationError) as exc_info:
         validator(payload)
@@ -176,6 +320,9 @@ def test_minimal_valid_payloads_for_each_contract() -> None:
     assert validate_document_extraction(document_payload()) == document_payload()
     assert validate_institutional_plan_extraction(institutional_payload()) == institutional_payload()
     assert validate_policy_matrix_extraction(policy_payload()) == policy_payload()
+    assert validate_thematic_landscape(thematic_payload()) == thematic_payload()
+    assert validate_regulatory_intelligence(regulatory_payload()) == regulatory_payload()
+    assert validate_strategic_assessment(strategic_payload()) == strategic_payload()
 
 
 def test_missing_required_field_is_rejected_with_readable_path() -> None:
@@ -263,3 +410,81 @@ def test_wrong_nested_field_type_is_rejected() -> None:
         "DocumentExtraction.findings[0].technologies",
     )
     assert "is not of type 'array'" in message
+
+
+def test_invalid_thematic_change_action_is_rejected() -> None:
+    payload = thematic_payload()
+    payload["themes"][0]["change_action"] = "combine"
+
+    message = assert_invalid(
+        payload,
+        validate_thematic_landscape,
+        "ThematicLandscape.themes[0].change_action",
+    )
+    assert "combine" in message
+    assert "rule=enum" in message
+
+
+def test_invalid_trend_direction_is_rejected() -> None:
+    payload = thematic_payload()
+    payload["trends"][0]["direction"] = "accelerating"
+
+    message = assert_invalid(
+        payload,
+        validate_thematic_landscape,
+        "ThematicLandscape.trends[0].direction",
+    )
+    assert "accelerating" in message
+    assert "rule=enum" in message
+
+
+def test_invalid_relationship_type_is_rejected() -> None:
+    payload = regulatory_payload()
+    payload["analyses"][0]["relationship_type"] = "unknown"
+
+    message = assert_invalid(
+        payload,
+        validate_regulatory_intelligence,
+        "RegulatoryIntelligence.analyses[0].relationship_type",
+    )
+    assert "unknown" in message
+    assert "rule=enum" in message
+
+
+def test_strategic_dimension_above_five_is_rejected_with_readable_path() -> None:
+    payload = strategic_payload()
+    payload["importance_assessments"][0]["dimensions"]["urgency"] = 6
+
+    message = assert_invalid(
+        payload,
+        validate_strategic_assessment,
+        "StrategicAssessment.importance_assessments[0].dimensions.urgency",
+    )
+    assert "greater than the maximum of 5" in message
+    assert "rule=maximum" in message
+
+
+def test_strategic_total_score_is_rejected() -> None:
+    payload = strategic_payload()
+    payload["importance_assessments"][0]["score"] = 90
+
+    message = assert_invalid(
+        payload,
+        validate_strategic_assessment,
+        "StrategicAssessment.importance_assessments[0]",
+    )
+    assert "propiedad adicional no permitida" in message
+    assert "score" in message
+
+
+def test_transversal_additional_property_is_rejected() -> None:
+    payload = regulatory_payload()
+    payload["analyses"][0]["invented"] = True
+
+    message = assert_invalid(
+        payload,
+        validate_regulatory_intelligence,
+        "RegulatoryIntelligence.analyses[0]",
+    )
+    assert "invented" in message
+    assert "rule=additionalProperties" in message

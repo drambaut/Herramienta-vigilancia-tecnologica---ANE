@@ -11,6 +11,9 @@ from jsonschema.exceptions import ValidationError
 from app.contracts.document_extraction import DOCUMENT_EXTRACTION_SCHEMA
 from app.contracts.institutional_plan import INSTITUTIONAL_PLAN_EXTRACTION_SCHEMA
 from app.contracts.policy_matrix import POLICY_MATRIX_EXTRACTION_SCHEMA
+from app.contracts.regulatory_intelligence import REGULATORY_INTELLIGENCE_SCHEMA
+from app.contracts.strategic_assessment import STRATEGIC_ASSESSMENT_SCHEMA
+from app.contracts.thematic_landscape import THEMATIC_LANDSCAPE_SCHEMA
 
 
 class ContractValidationError(ValueError):
@@ -74,3 +77,15 @@ def validate_institutional_plan_extraction(payload: Mapping[str, Any]) -> Mappin
 
 def validate_policy_matrix_extraction(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     return validate_contract(payload, POLICY_MATRIX_EXTRACTION_SCHEMA)
+
+
+def validate_thematic_landscape(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return validate_contract(payload, THEMATIC_LANDSCAPE_SCHEMA)
+
+
+def validate_regulatory_intelligence(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return validate_contract(payload, REGULATORY_INTELLIGENCE_SCHEMA)
+
+
+def validate_strategic_assessment(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return validate_contract(payload, STRATEGIC_ASSESSMENT_SCHEMA)

@@ -6,6 +6,9 @@ from app.contracts import (
     DOCUMENT_EXTRACTION_SCHEMA,
     INSTITUTIONAL_PLAN_EXTRACTION_SCHEMA,
     POLICY_MATRIX_EXTRACTION_SCHEMA,
+    REGULATORY_INTELLIGENCE_SCHEMA,
+    STRATEGIC_ASSESSMENT_SCHEMA,
+    THEMATIC_LANDSCAPE_SCHEMA,
 )
 from app.contracts.common import (
     CONFIDENCE_VALUES,
@@ -13,6 +16,12 @@ from app.contracts.common import (
     EXTRACTION_BASIS_VALUES,
 )
 from app.contracts.document_extraction import FINDING_TYPE_VALUES
+from app.contracts.regulatory_intelligence import RELATIONSHIP_TYPE_VALUES
+from app.contracts.strategic_assessment import ALIGNMENT_TYPE_VALUES
+from app.contracts.thematic_landscape import (
+    CHANGE_ACTION_VALUES,
+    TREND_DIRECTION_VALUES,
+)
 
 
 def _properties(schema: dict) -> dict:
@@ -24,6 +33,9 @@ def test_contracts_are_json_serializable() -> None:
         DOCUMENT_EXTRACTION_SCHEMA,
         INSTITUTIONAL_PLAN_EXTRACTION_SCHEMA,
         POLICY_MATRIX_EXTRACTION_SCHEMA,
+        THEMATIC_LANDSCAPE_SCHEMA,
+        REGULATORY_INTELLIGENCE_SCHEMA,
+        STRATEGIC_ASSESSMENT_SCHEMA,
     ):
         encoded = json.dumps(schema, ensure_ascii=False)
         assert encoded.startswith("{")
@@ -141,3 +153,61 @@ def test_policy_matrix_has_policies_activities_commitments_and_evidence() -> Non
     assert "temporary_id" in properties["activities"]["items"]["required"]
     assert "evidence_ids" in properties["activities"]["items"]["required"]
     assert "commitments" in activity_properties
+
+
+def test_thematic_landscape_uses_open_themes_and_expected_enums() -> None:
+    properties = _properties(THEMATIC_LANDSCAPE_SCHEMA)
+    theme = properties["themes"]["items"]
+    trend = properties["trends"]["items"]
+
+    assert THEMATIC_LANDSCAPE_SCHEMA["required"] == [
+        "corpus_summary",
+        "themes",
+        "trends",
+        "emerging_signals",
+        "evidence_ids",
+    ]
+    assert "enum" not in _properties(theme)["name"]
+    assert _properties(theme)["change_action"]["enum"] == CHANGE_ACTION_VALUES
+    assert _properties(trend)["direction"]["enum"] == TREND_DIRECTION_VALUES
+    assert "strategic_topic" not in json.dumps(THEMATIC_LANDSCAPE_SCHEMA)
+    assert "TEMAS_ESTRATEGICOS" not in json.dumps(THEMATIC_LANDSCAPE_SCHEMA)
+
+
+def test_regulatory_intelligence_relationship_enum_and_backend_ids() -> None:
+    item = _properties(REGULATORY_INTELLIGENCE_SCHEMA)["analyses"]["items"]
+    properties = _properties(item)
+
+    assert REGULATORY_INTELLIGENCE_SCHEMA["required"] == [
+        "analyses",
+        "overall_gaps",
+        "evidence_ids",
+    ]
+    assert properties["relationship_type"]["enum"] == RELATIONSHIP_TYPE_VALUES
+    assert properties["agenda_item_ids"]["items"]["type"] == "string"
+    assert "theme_id" in properties
+    assert "theme_temporary_id" in properties
+
+
+def test_strategic_assessment_separates_collections_and_has_no_total_score() -> None:
+    properties = _properties(STRATEGIC_ASSESSMENT_SCHEMA)
+
+    assert STRATEGIC_ASSESSMENT_SCHEMA["required"] == [
+        "importance_assessments",
+        "opportunity_assessments",
+        "alignment_assessments",
+    ]
+    assert set(properties) == set(STRATEGIC_ASSESSMENT_SCHEMA["required"])
+    encoded = json.dumps(STRATEGIC_ASSESSMENT_SCHEMA)
+    assert "score" not in encoded
+    assert "weight" not in encoded
+
+    importance_dimensions = _properties(
+        properties["importance_assessments"]["items"]
+    )["dimensions"]
+    for dimension in _properties(importance_dimensions).values():
+        assert dimension["minimum"] == 0
+        assert dimension["maximum"] == 5
+
+    alignment = properties["alignment_assessments"]["items"]
+    assert _properties(alignment)["alignment_type"]["enum"] == ALIGNMENT_TYPE_VALUES
