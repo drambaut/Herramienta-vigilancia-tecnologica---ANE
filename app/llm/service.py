@@ -8,10 +8,16 @@ from typing import Any
 from app.contracts.document_extraction import DOCUMENT_EXTRACTION_SCHEMA
 from app.contracts.institutional_plan import INSTITUTIONAL_PLAN_EXTRACTION_SCHEMA
 from app.contracts.policy_matrix import POLICY_MATRIX_EXTRACTION_SCHEMA
+from app.contracts.regulatory_intelligence import REGULATORY_INTELLIGENCE_SCHEMA
+from app.contracts.strategic_assessment import STRATEGIC_ASSESSMENT_SCHEMA
+from app.contracts.thematic_landscape import THEMATIC_LANDSCAPE_SCHEMA
 from app.contracts.validation import (
     validate_document_extraction,
     validate_institutional_plan_extraction,
     validate_policy_matrix_extraction,
+    validate_regulatory_intelligence,
+    validate_strategic_assessment,
+    validate_thematic_landscape,
 )
 from app.llm.base import LLMClient, LLMInput
 from app.llm.errors import InvalidContractError
@@ -23,12 +29,18 @@ SCHEMA_BY_CONTRACT: dict[str, dict[str, Any]] = {
     "DocumentExtraction": DOCUMENT_EXTRACTION_SCHEMA,
     "InstitutionalPlanExtraction": INSTITUTIONAL_PLAN_EXTRACTION_SCHEMA,
     "PolicyMatrixExtraction": POLICY_MATRIX_EXTRACTION_SCHEMA,
+    "ThematicLandscape": THEMATIC_LANDSCAPE_SCHEMA,
+    "RegulatoryIntelligence": REGULATORY_INTELLIGENCE_SCHEMA,
+    "StrategicAssessment": STRATEGIC_ASSESSMENT_SCHEMA,
 }
 
 VALIDATOR_BY_CONTRACT = {
     "DocumentExtraction": validate_document_extraction,
     "InstitutionalPlanExtraction": validate_institutional_plan_extraction,
     "PolicyMatrixExtraction": validate_policy_matrix_extraction,
+    "ThematicLandscape": validate_thematic_landscape,
+    "RegulatoryIntelligence": validate_regulatory_intelligence,
+    "StrategicAssessment": validate_strategic_assessment,
 }
 
 

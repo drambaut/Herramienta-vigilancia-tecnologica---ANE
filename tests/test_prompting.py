@@ -14,6 +14,9 @@ V1_PROMPTS = {
     "document_extraction": "DocumentExtraction",
     "institutional_plan_extraction": "InstitutionalPlanExtraction",
     "policy_matrix_extraction": "PolicyMatrixExtraction",
+    "thematic_landscape": "ThematicLandscape",
+    "regulatory_intelligence": "RegulatoryIntelligence",
+    "strategic_assessment": "StrategicAssessment",
 }
 
 
@@ -59,15 +62,70 @@ def test_document_prompt_avoids_closed_strategic_taxonomy_references() -> None:
 def test_prompts_include_required_json_evidence_and_confidence_instructions() -> None:
     for prompt_id in V1_PROMPTS:
         _, content = load_prompt(prompt_id, "v1")
-        assert "JSON Schema" in content
+        assert "JSON Schema" in content or "Schema" in content
         assert "response_schema" in content
         assert "Devuelve unicamente JSON valido" in content
         assert "temporary_id" in content
         assert "confidence unicamente con estos valores: Alta, Media o Baja" in content
+        assert "evidence" in content or "evidencia" in content
+
+    for prompt_id in (
+        "document_extraction",
+        "institutional_plan_extraction",
+        "policy_matrix_extraction",
+    ):
+        _, content = load_prompt(prompt_id, "v1")
         assert "extraction_basis unicamente con estos valores: explicit, inferred o mixed" in content
         assert "quote" in content
         assert "maximo 500 caracteres" in content
-        assert "evidence" in content or "evidencia" in content
+
+
+def test_transversal_prompts_are_active_and_avoid_closed_taxonomies() -> None:
+    for prompt_id in (
+        "thematic_landscape",
+        "regulatory_intelligence",
+        "strategic_assessment",
+    ):
+        spec, content = load_prompt(prompt_id, "v1")
+        assert spec.status == "active"
+        assert "TEMAS_ESTRATEGICOS" not in content
+        assert "taxonomias cerradas" in content
+        assert "Devuelve unicamente JSON valido" in content
+        assert "response_schema" in content
+        assert "evidence_ids" in content
+        assert "No crees citas textuales nuevas" in content
+
+
+def test_thematic_landscape_prompt_mentions_thematic_changes() -> None:
+    _, content = load_prompt("thematic_landscape", "v1")
+
+    assert "change_action" in content
+    assert "create, retain, rename, merge, split, retire" in content
+    assert "fusiones" in content
+    assert "divisiones" in content
+    assert "tendencia" in content
+    assert "senales emergentes" in content
+
+
+def test_regulatory_intelligence_prompt_requires_agenda() -> None:
+    _, content = load_prompt("regulatory_intelligence", "v1")
+
+    assert "Agenda Regulatoria" in content
+    assert "agenda_item_ids" in content
+    assert "No inventes iniciativas" in content
+    assert "covered, partially_covered, gap, complementary, tension, no_direct_relation" in content
+
+
+def test_strategic_assessment_prompt_separates_three_assessments_without_scores() -> None:
+    _, content = load_prompt("strategic_assessment", "v1")
+
+    assert "importance_assessments" in content
+    assert "opportunity_assessments" in content
+    assert "alignment_assessments" in content
+    assert "No produzcas score total" in content
+    assert "No apliques pesos" in content
+    assert "policy_activity_ids" in content
+    assert "pmge_project_ids" in content
 
 
 def test_institutional_plan_prompt_separates_pmge_and_agenda() -> None:

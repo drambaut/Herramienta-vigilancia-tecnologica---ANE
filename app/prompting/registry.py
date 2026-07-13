@@ -49,6 +49,30 @@ PROMPT_REGISTRY: tuple[PromptSpec, ...] = (
         status="active",
         description="Extraccion de politicas, actividades, compromisos y evidencia.",
     ),
+    PromptSpec(
+        prompt_id="thematic_landscape",
+        version="v1",
+        path=Path("prompts/v1/thematic_landscape.txt"),
+        contract="ThematicLandscape",
+        status="active",
+        description="Analisis transversal de paisaje tematico del corpus.",
+    ),
+    PromptSpec(
+        prompt_id="regulatory_intelligence",
+        version="v1",
+        path=Path("prompts/v1/regulatory_intelligence.txt"),
+        contract="RegulatoryIntelligence",
+        status="active",
+        description="Comparacion regulatoria entre panorama tematico, corpus y Agenda.",
+    ),
+    PromptSpec(
+        prompt_id="strategic_assessment",
+        version="v1",
+        path=Path("prompts/v1/strategic_assessment.txt"),
+        contract="StrategicAssessment",
+        status="active",
+        description="Evaluacion separada de importancia, oportunidad y alineacion.",
+    ),
 )
 
 

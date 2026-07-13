@@ -90,6 +90,84 @@ def policy_payload() -> dict:
     }
 
 
+def thematic_payload(change_action: str = "create") -> dict:
+    return {
+        "corpus_summary": "Resumen.",
+        "themes": [
+            {
+                "temporary_id": "theme-1",
+                "name": "Tema abierto",
+                "definition": "Definicion",
+                "scope": "Alcance",
+                "subthemes": [],
+                "technologies": [],
+                "frequency_bands": [],
+                "countries_regions": [],
+                "organizations": [],
+                "finding_ids": ["finding-uuid"],
+                "evidence_ids": ["ev-uuid"],
+                "change_action": change_action,
+                "previous_topic_ids": [],
+                "confidence": "Alta",
+                "extraction_basis": "mixed",
+            }
+        ],
+        "trends": [],
+        "emerging_signals": [],
+        "evidence_ids": ["ev-uuid"],
+    }
+
+
+def regulatory_payload() -> dict:
+    return {
+        "analyses": [
+            {
+                "temporary_id": "reg-1",
+                "theme_id": "theme-uuid",
+                "international_situation": "Situacion",
+                "regulatory_debate": "Debate",
+                "countries_regions": [],
+                "organizations": [],
+                "agenda_item_ids": ["agenda-uuid"],
+                "relationship_type": "covered",
+                "coverage_explanation": "Cubierto",
+                "implications_for_ane": "Implicaciones",
+                "finding_ids": ["finding-uuid"],
+                "evidence_ids": ["ev-uuid"],
+                "confidence": "Alta",
+                "extraction_basis": "explicit",
+            }
+        ],
+        "overall_gaps": [],
+        "evidence_ids": ["ev-uuid"],
+    }
+
+
+def strategic_payload() -> dict:
+    return {
+        "importance_assessments": [
+            {
+                "temporary_id": "importance-1",
+                "subject_type": "theme",
+                "subject_id": "theme-uuid",
+                "dimensions": {
+                    "ane_relevance": 5,
+                    "magnitude": 4,
+                    "urgency": 3,
+                    "evidence_strength": 4,
+                    "institutional_scope": 5,
+                },
+                "level": "Alta",
+                "rationale": "Razon",
+                "evidence_ids": ["ev-uuid"],
+                "confidence": "Alta",
+            }
+        ],
+        "opportunity_assessments": [],
+        "alignment_assessments": [],
+    }
+
+
 class FakeClient:
     model_name = "fake-model"
 
@@ -149,6 +227,9 @@ def test_service_selects_prompt_and_schema() -> None:
         ("document_extraction", document_payload(), "DocumentExtraction"),
         ("institutional_plan_extraction", institutional_payload(), "InstitutionalPlanExtraction"),
         ("policy_matrix_extraction", policy_payload(), "PolicyMatrixExtraction"),
+        ("thematic_landscape", thematic_payload(), "ThematicLandscape"),
+        ("regulatory_intelligence", regulatory_payload(), "RegulatoryIntelligence"),
+        ("strategic_assessment", strategic_payload(), "StrategicAssessment"),
     ],
 )
 def test_service_accepts_valid_responses(prompt_id: str, payload: dict, contract: str) -> None:
@@ -165,6 +246,13 @@ def test_service_rejects_invalid_response() -> None:
 
     with pytest.raises(Exception, match="DocumentExtraction.findings\\[0\\].confidence"):
         service.extract(prompt_id="document_extraction", version="v1", content="texto")
+
+
+def test_service_rejects_invalid_transversal_response() -> None:
+    service = StructuredExtractionService(client=FakeClient(thematic_payload("combine")))
+
+    with pytest.raises(Exception, match="ThematicLandscape.themes\\[0\\].change_action"):
+        service.extract(prompt_id="thematic_landscape", version="v1", content="texto")
 
 
 def test_service_accepts_llm_input() -> None:
