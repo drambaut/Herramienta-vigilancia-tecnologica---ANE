@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 
 from app.analysis_runs.models import (
     STAGE_ORDER,
@@ -23,6 +23,7 @@ from app.documents.models import Document
 from app.llm.base import LLMInput
 from app.llm.service import ExtractionResult, StructuredExtractionService
 from app.results.models import PersistenceBundle
+from app.scoring.strategic import score_strategic_assessment
 
 
 @dataclass(frozen=True)
@@ -66,11 +67,16 @@ class TransversalAnalysisWorkflow:
         context_builder: CorpusContextBuilder,
         extraction_service: StructuredExtractionService,
         analysis_run_repository: AnalysisRunRepository,
+        strategic_assessment_scorer: Callable[[dict[str, Any]], dict[str, Any]]
+        | None = None,
     ) -> None:
         self._snapshot_builder = snapshot_builder
         self._context_builder = context_builder
         self._extraction_service = extraction_service
         self._analysis_runs = analysis_run_repository
+        self._strategic_assessment_scorer = (
+            strategic_assessment_scorer or score_strategic_assessment
+        )
 
     def run(
         self,
@@ -294,6 +300,15 @@ class TransversalAnalysisWorkflow:
             raise ValueError(
                 f"Contrato inesperado para {stage_run.stage.value}: "
                 f"{result.contract_name} != {stage_run.contract_name}."
+            )
+        if stage_run.stage == AnalysisStage.STRATEGIC_ASSESSMENT:
+            scored_payload = self._strategic_assessment_scorer(result.payload)
+            return ExtractionResult(
+                payload=scored_payload,
+                prompt_id=result.prompt_id,
+                prompt_version=result.prompt_version,
+                contract_name=result.contract_name,
+                model_name=result.model_name,
             )
         return result
 

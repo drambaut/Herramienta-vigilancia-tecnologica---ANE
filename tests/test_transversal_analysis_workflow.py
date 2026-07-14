@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from datetime import UTC, date, datetime
 
 import pytest
@@ -52,6 +53,25 @@ class FakeTransversalClient:
             "RegulatoryIntelligence": regulatory_payload(),
             "StrategicAssessment": strategic_payload(),
         }[contract]
+
+
+class SpyScorer:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[dict] = []
+
+    def __call__(self, payload: dict) -> dict:
+        self.calls.append(copy.deepcopy(payload))
+        if self.fail:
+            raise RuntimeError("fallo scoring")
+        scored = copy.deepcopy(payload)
+        for item in scored["importance_assessments"]:
+            item["importance_score"] = 84.0
+        for item in scored["opportunity_assessments"]:
+            item["opportunity_score"] = 50.0
+        for item in scored["alignment_assessments"]:
+            item["alignment_score"] = 0.0
+        return scored
 
 
 def document(document_id: str, source_type: SourceType) -> Document:
@@ -267,12 +287,59 @@ def strategic_payload() -> dict:
                 "confidence": "Alta",
             }
         ],
-        "opportunity_assessments": [],
-        "alignment_assessments": [],
+        "opportunity_assessments": [
+            {
+                "temporary_id": "opportunity-1",
+                "theme_id": "theme-1",
+                "policy_activity_ids": ["policy-activity-1"],
+                "dimensions": {
+                    "policy_gap": 2.5,
+                    "institutional_relevance": 2.5,
+                    "actionability": 2.5,
+                    "evidence_maturity": 2.5,
+                    "timing": 2.5,
+                },
+                "level": "Media",
+                "rationale": "Razon oportunidad",
+                "suggested_action": "Accion",
+                "evidence_ids": ["ev-policy"],
+                "confidence": "Alta",
+            }
+        ],
+        "alignment_assessments": [
+            {
+                "temporary_id": "alignment-1",
+                "theme_id": "theme-1",
+                "pmge_project_ids": ["pmge-project-1"],
+                "dimensions": {
+                    "objective_match": 0,
+                    "activity_match": 0,
+                    "deliverable_match": 0,
+                    "temporal_match": 0,
+                    "evidence_strength": 0,
+                },
+                "level": "Baja",
+                "rationale": "Razon alineacion",
+                "alignment_type": "weak",
+                "evidence_ids": ["ev-plan"],
+                "confidence": "Alta",
+            }
+        ],
     }
 
 
-def make_workflow(client: FakeTransversalClient | None = None):
+def scored_strategic_payload() -> dict:
+    payload = strategic_payload()
+    payload["importance_assessments"][0]["importance_score"] = 84.0
+    payload["opportunity_assessments"][0]["opportunity_score"] = 50.0
+    payload["alignment_assessments"][0]["alignment_score"] = 0.0
+    return payload
+
+
+def make_workflow(
+    client: FakeTransversalClient | None = None,
+    scorer=None,
+):
     snapshot_repo = InMemoryCorpusSnapshotRepository()
     analysis_repo = InMemoryAnalysisRunRepository(
         uuid_factory=uuid_factory(), clock=lambda: NOW
@@ -285,6 +352,7 @@ def make_workflow(client: FakeTransversalClient | None = None):
         context_builder=CorpusContextBuilder(),
         extraction_service=StructuredExtractionService(client=client),
         analysis_run_repository=analysis_repo,
+        strategic_assessment_scorer=scorer,
     )
     return workflow, snapshot_repo, analysis_repo, client
 
@@ -331,7 +399,7 @@ def test_prompts_versions_contracts_and_stage_results_are_frozen():
     ]
     assert stages[0].result_payload == thematic_payload()
     assert stages[1].result_payload == regulatory_payload()
-    assert stages[2].result_payload == strategic_payload()
+    assert stages[2].result_payload == scored_strategic_payload()
 
 
 def test_contexts_are_text_json_and_dependent_stages_receive_thematic_result():
@@ -354,6 +422,66 @@ def test_contexts_are_text_json_and_dependent_stages_receive_thematic_result():
         assert "file_hash" not in call["text"]
         assert "storage_path" not in call["text"]
         assert "chunks" not in call["text"]
+
+
+def test_strategic_scores_are_saved_after_validation_without_mutating_client_payload():
+    docs, bundles = fixtures()
+    client = FakeTransversalClient()
+    raw_response = strategic_payload()
+    scorer = SpyScorer()
+    workflow, _, analysis_repo, _ = make_workflow(client, scorer=scorer)
+
+    result = workflow.run(documents=docs, bundles=bundles, auto_publish=False)
+    stage = analysis_repo.get_stage(result.run.id, AnalysisStage.STRATEGIC_ASSESSMENT)
+
+    assert stage.result_payload["importance_assessments"][0]["importance_score"] == 84.0
+    assert stage.result_payload["opportunity_assessments"][0]["opportunity_score"] == 50.0
+    assert stage.result_payload["alignment_assessments"][0]["alignment_score"] == 0.0
+    assert stage.result_payload["importance_assessments"][0]["dimensions"] == (
+        raw_response["importance_assessments"][0]["dimensions"]
+    )
+    assert stage.result_payload["importance_assessments"][0]["rationale"] == "Razon"
+    assert stage.result_payload["importance_assessments"][0]["evidence_ids"] == ["ev-1"]
+    assert scorer.calls == [raw_response]
+    assert strategic_payload() == raw_response
+    assert [call["contract"] for call in client.calls] == [
+        "ThematicLandscape",
+        "RegulatoryIntelligence",
+        "StrategicAssessment",
+    ]
+
+
+def test_scorer_runs_after_validation_only():
+    docs, bundles = fixtures()
+    invalid_client = FakeTransversalClient()
+    scorer = SpyScorer()
+
+    def invalid_generate_json(*, prompt, input_data, response_schema):
+        invalid_client.calls.append(
+            {
+                "contract": response_schema["title"],
+                "input_data": input_data,
+                "text": input_data.text,
+                "prompt": prompt,
+            }
+        )
+        if response_schema["title"] == "StrategicAssessment":
+            payload = strategic_payload()
+            payload["importance_assessments"][0]["dimensions"]["ane_relevance"] = 9
+            return payload
+        return {
+            "ThematicLandscape": thematic_payload(),
+            "RegulatoryIntelligence": regulatory_payload(),
+        }[response_schema["title"]]
+
+    invalid_client.generate_json = invalid_generate_json
+    workflow, _, _, _ = make_workflow(invalid_client, scorer=scorer)
+
+    with pytest.raises(TransversalAnalysisWorkflowError) as exc:
+        workflow.run(documents=docs, bundles=bundles)
+
+    assert exc.value.stage == AnalysisStage.STRATEGIC_ASSESSMENT.value
+    assert scorer.calls == []
 
 
 @pytest.mark.parametrize(
@@ -397,6 +525,30 @@ def test_stage_failure_stops_later_stages_and_does_not_publish(
     assert analysis_repo.get_latest_published_run() is None
 
 
+def test_scoring_failure_fails_strategic_stage_and_does_not_publish():
+    docs, bundles = fixtures()
+    scorer = SpyScorer(fail=True)
+    workflow, _, analysis_repo, client = make_workflow(scorer=scorer)
+
+    with pytest.raises(TransversalAnalysisWorkflowError) as exc:
+        workflow.run(documents=docs, bundles=bundles)
+
+    assert exc.value.stage == AnalysisStage.STRATEGIC_ASSESSMENT.value
+    assert "importance_assessments" not in str(exc.value)
+    run = analysis_repo.get_run(exc.value.run_id)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert (
+        analysis_repo.get_stage(run.id, AnalysisStage.STRATEGIC_ASSESSMENT).status
+        == AnalysisRunStatus.FAILED
+    )
+    assert analysis_repo.get_latest_published_run() is None
+    assert [call["contract"] for call in client.calls] == [
+        "ThematicLandscape",
+        "RegulatoryIntelligence",
+        "StrategicAssessment",
+    ]
+
+
 def test_retry_does_not_repeat_completed_stages_and_reexecutes_dependents():
     docs, bundles = fixtures()
     failing = FakeTransversalClient(fail_on="RegulatoryIntelligence")
@@ -433,6 +585,46 @@ def test_retry_does_not_repeat_completed_stages_and_reexecutes_dependents():
     ]
     assert result.run.status == AnalysisRunStatus.COMPLETED
     assert all(stage.status == AnalysisRunStatus.COMPLETED for stage in result.stages)
+
+
+def test_retry_after_scoring_failure_reexecutes_only_strategic_assessment():
+    docs, bundles = fixtures()
+    failing_scorer = SpyScorer(fail=True)
+    workflow, snapshot_repo, analysis_repo, client = make_workflow(
+        scorer=failing_scorer
+    )
+
+    with pytest.raises(TransversalAnalysisWorkflowError) as exc:
+        workflow.run(documents=docs, bundles=bundles, auto_publish=False)
+
+    retry_client = FakeTransversalClient()
+    retry_workflow = TransversalAnalysisWorkflow(
+        snapshot_builder=workflow._snapshot_builder,
+        context_builder=CorpusContextBuilder(),
+        extraction_service=StructuredExtractionService(client=retry_client),
+        analysis_run_repository=analysis_repo,
+        strategic_assessment_scorer=SpyScorer(),
+    )
+    result = retry_workflow.retry(
+        run_id=exc.value.run_id,
+        snapshot=snapshot_repo.get_snapshot("snapshot-1"),
+        documents=docs,
+        bundles=bundles,
+        auto_publish=False,
+    )
+
+    assert [call["contract"] for call in client.calls] == [
+        "ThematicLandscape",
+        "RegulatoryIntelligence",
+        "StrategicAssessment",
+    ]
+    assert [call["contract"] for call in retry_client.calls] == [
+        "StrategicAssessment"
+    ]
+    assert result.run.status == AnalysisRunStatus.COMPLETED
+    assert result.results[AnalysisStage.STRATEGIC_ASSESSMENT].payload == (
+        scored_strategic_payload()
+    )
 
 
 def test_publication_is_atomic_and_keeps_previous_published_history():
