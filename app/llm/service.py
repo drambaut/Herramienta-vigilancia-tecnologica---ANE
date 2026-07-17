@@ -83,7 +83,7 @@ class StructuredExtractionService:
             input_data=normalized_input,
             response_schema=schema,
         )
-        validated = validator(payload)
+        validated = validator(_normalize_provider_payload(payload, schema))
         return ExtractionResult(
             payload=dict(validated),
             prompt_id=spec.prompt_id,
@@ -102,3 +102,44 @@ class StructuredExtractionService:
         if content is not None:
             return LLMInput(text=content)
         return LLMInput()
+
+
+def _normalize_provider_payload(value, schema: dict[str, Any] | None = None):
+    """Ajustes defensivos para salidas LLM antes de validar contratos."""
+    if schema is not None:
+        return _normalize_with_schema(value, schema)
+    if isinstance(value, dict):
+        normalized = {}
+        for key, child in value.items():
+            if key == "quote" and isinstance(child, str) and len(child) > 500:
+                normalized[key] = child[:500].rstrip()
+            else:
+                normalized[key] = _normalize_provider_payload(child)
+        return normalized
+    if isinstance(value, list):
+        return [_normalize_provider_payload(item) for item in value]
+    return value
+
+
+def _normalize_with_schema(value, schema: dict[str, Any]):
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        schema_type = next((item for item in schema_type if item != "null"), None)
+    if schema_type == "object" and isinstance(value, dict):
+        properties = schema.get("properties", {})
+        return {
+            key: _normalize_with_schema(child, properties.get(key, {}))
+            for key, child in value.items()
+        }
+    if schema_type == "array" and isinstance(value, list):
+        item_schema = schema.get("items", {})
+        normalized = [_normalize_with_schema(item, item_schema) for item in value]
+        max_items = schema.get("maxItems")
+        if isinstance(max_items, int):
+            normalized = normalized[:max_items]
+        return normalized
+    if schema_type == "string" and isinstance(value, str):
+        max_length = schema.get("maxLength")
+        if isinstance(max_length, int) and len(value) > max_length:
+            return value[:max_length].rstrip()
+    return value

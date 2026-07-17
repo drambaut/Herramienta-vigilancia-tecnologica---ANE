@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from datetime import UTC, datetime
+from dataclasses import replace
 
 import pytest
 
@@ -325,6 +326,18 @@ def test_canonical_key_entity_type_prevents_name_collisions() -> None:
     assert bundle.policies[0].canonical_key != bundle.policy_activities[0].canonical_key
 
 
+def test_duplicate_canonical_keys_are_disambiguated_deterministically() -> None:
+    payload = document_payload()
+    duplicate = copy.deepcopy(payload["findings"][0])
+    duplicate["temporary_id"] = "finding-2"
+    payload["findings"].append(duplicate)
+
+    bundle = normalizer().normalize(make_document(), extraction(payload), report())
+
+    assert bundle.findings[0].canonical_key == "finding|doc-1|riesgo|riesgo"
+    assert bundle.findings[1].canonical_key == "finding|doc-1|riesgo|riesgo|duplicate-2"
+
+
 def test_dependent_canonical_keys_use_final_uuid() -> None:
     institutional = normalizer().normalize(
         make_document(),
@@ -376,6 +389,14 @@ def test_invalid_evidence_report_is_rejected() -> None:
         normalizer().normalize(make_document(), extraction(document_payload()), report(valid=False))
 
 
+def test_unvalidated_evidence_entry_is_rejected_with_clear_error() -> None:
+    payload = document_payload()
+    payload["evidence"].append(evidence("E1_cover", "Portada"))
+
+    with pytest.raises(ResultNormalizationError, match="E1_cover"):
+        normalizer().normalize(make_document(), extraction(payload), report())
+
+
 def test_missing_temporary_reference_is_rejected() -> None:
     payload = document_payload()
     payload["findings"][0]["evidence_ids"] = ["ev-missing"]
@@ -399,6 +420,10 @@ def test_in_memory_repository_is_atomic_on_duplicate_key() -> None:
     duplicate["temporary_id"] = "finding-2"
     payload["findings"].append(duplicate)
     bundle = normalizer().normalize(make_document(), extraction(payload), report())
+    bundle.findings[1] = replace(
+        bundle.findings[1],
+        canonical_key=bundle.findings[0].canonical_key,
+    )
 
     with pytest.raises(DuplicateResultError):
         repository.save_bundle(bundle)

@@ -62,6 +62,9 @@ EVIDENCE_SCHEMA = {
 }
 
 
-def array_of(schema: dict, min_items: int = 0) -> dict:
+def array_of(schema: dict, min_items: int = 0, max_items: int | None = None) -> dict:
     """Declara una lista JSON Schema reutilizable."""
-    return {"type": "array", "items": schema, "minItems": min_items}
+    result = {"type": "array", "items": schema, "minItems": min_items}
+    if max_items is not None:
+        result["maxItems"] = max_items
+    return result

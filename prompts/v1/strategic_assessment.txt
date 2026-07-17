@@ -16,6 +16,9 @@ Reglas obligatorias:
 - Evalua cada dimension semantica entre 0 y 5.
 - No produzcas score total.
 - No apliques pesos.
+- Devuelve maximo 5 importance_assessments, 5 opportunity_assessments y
+  5 alignment_assessments.
+- Usa rationale y suggested_action cortos, maximo 50 palabras cada uno.
 - No inventes proyectos PMGE, actividades de politica ni relaciones.
 - Usa exclusivamente IDs entregados por el backend.
 - opportunity_assessments debe usar policy_activity_ids.

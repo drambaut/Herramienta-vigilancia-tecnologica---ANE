@@ -75,6 +75,7 @@ class DocumentService:
         storage_path: str | None = None,
         document_date: date | None = None,
         replaces_id: str | None = None,
+        document_id: str | None = None,
     ) -> DocumentRegistration:
         file_hash = self.calculate_sha256(content)
         existing = self._repository.find_document_by_hash(file_hash)
@@ -83,7 +84,7 @@ class DocumentService:
 
         now = datetime.now(UTC)
         document = Document(
-            id=str(uuid4()),
+            id=document_id or str(uuid4()),
             file_name=file_name,
             file_type=file_type,
             source_type=source_type,

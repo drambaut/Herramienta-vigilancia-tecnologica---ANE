@@ -188,10 +188,82 @@ def test_pdf_quote_on_correct_page_is_verified() -> None:
     assert report.items[0].matched_chunk_id == "p1"
 
 
-def test_pdf_quote_on_wrong_page_is_invalid_location() -> None:
+def test_pdf_quote_with_extraction_artifacts_is_verified() -> None:
+    report = EvidenceValidator().validate(
+        make_document(),
+        [
+            pdf_chunk(
+                "p1",
+                "The report describes spectrum-\nsharing and non-terrestrial "
+                "networks for rural coverage.",
+                1,
+                1,
+            )
+        ],
+        document_payload(
+            [
+                evidence(
+                    quote=(
+                        "spectrum sharing and non terrestrial networks "
+                        "for rural coverage"
+                    )
+                )
+            ]
+        ),
+    )
+
+    assert report.is_valid is True
+    assert report.items[0].matched_chunk_id == "p1"
+
+
+def test_pdf_near_literal_long_quote_is_verified_by_token_overlap() -> None:
+    report = EvidenceValidator().validate(
+        make_document(),
+        [
+            pdf_chunk(
+                "p1",
+                "The 3.5 GHz band supports private networks, industrial "
+                "automation, capacity growth, and coverage obligations.",
+                1,
+                1,
+            )
+        ],
+        document_payload(
+            [
+                evidence(
+                    quote=(
+                        "The 3.5 GHz band supports private networks, "
+                        "industrial automation, capacity growth, coverage "
+                        "obligations."
+                    )
+                )
+            ]
+        ),
+    )
+
+    assert report.is_valid is True
+    assert report.items[0].matched_chunk_id == "p1"
+
+
+def test_pdf_quote_on_wrong_page_is_relocated_when_unique() -> None:
     report = EvidenceValidator().validate(
         make_document(),
         [pdf_chunk("p1", "texto clave", 1, 1)],
+        document_payload([evidence(page_number=2)]),
+    )
+
+    assert status_of(report, "ev-1") == EvidenceValidationStatus.VERIFIED
+    assert report.items[0].page_number == 1
+    assert report.is_valid is True
+
+
+def test_pdf_quote_on_wrong_page_with_multiple_matches_is_invalid_location() -> None:
+    report = EvidenceValidator().validate(
+        make_document(),
+        [
+            pdf_chunk("p1", "texto clave", 1, 1),
+            pdf_chunk("p2", "texto clave", 3, 2),
+        ],
         document_payload([evidence(page_number=2)]),
     )
 
@@ -243,7 +315,85 @@ def test_excel_quote_with_correct_sheet_and_row_is_verified() -> None:
     assert report.items[0].matched_chunk_id == "r1"
 
 
-def test_excel_quote_with_wrong_location_is_invalid_location() -> None:
+def test_excel_quote_with_partial_overlap_on_declared_row_is_verified() -> None:
+    report = EvidenceValidator().validate(
+        make_document(file_type="xlsx", source_type=SourceType.SURVEILLANCE),
+        [
+            excel_chunk(
+                "r1",
+                (
+                    "row=Indicador=Fecha de elaboracion; Valor=2026-06-24; "
+                    "Fuente=Cullen International; Cantidad=187"
+                ),
+                "Resumen",
+                "4",
+                1,
+            )
+        ],
+        document_payload(
+            [
+                evidence(
+                    quote="Elaboracion 2026-06-24 Cullen International 187",
+                    page_number=None,
+                    sheet_name="Resumen",
+                    row_reference="4",
+                )
+            ]
+        ),
+    )
+
+    assert report.is_valid is True
+    assert report.items[0].matched_chunk_id == "r1"
+
+
+def test_excel_row_reference_label_from_llm_is_normalized() -> None:
+    report = EvidenceValidator().validate(
+        make_document(file_type="xlsx", source_type=SourceType.SURVEILLANCE),
+        [excel_chunk("r1", "col=texto clave", "00_Resumen", "2", 1)],
+        document_payload(
+            [
+                evidence(
+                    page_number=None,
+                    sheet_name="00_Resumen",
+                    row_reference="ROW_REFERENCE: 2",
+                )
+            ]
+        ),
+    )
+
+    assert report.is_valid is True
+    assert report.items[0].matched_chunk_id == "r1"
+
+
+def test_excel_quote_with_partial_overlap_on_declared_sheet_is_verified() -> None:
+    report = EvidenceValidator().validate(
+        make_document(file_type="xlsx", source_type=SourceType.SURVEILLANCE),
+        [
+            excel_chunk(
+                "r1",
+                "Tema=5G; Fuente=TeleSemana; Pais=Colombia; Ano=2026",
+                "00_Resumen",
+                "6",
+                1,
+            )
+        ],
+        document_payload(
+            [
+                evidence(
+                    quote="TeleSemana Colombia 2026",
+                    page_number=None,
+                    sheet_name="00_Resumen",
+                    row_reference="8",
+                )
+            ]
+        ),
+    )
+
+    assert report.is_valid is True
+    assert report.items[0].matched_chunk_id == "r1"
+
+
+def test_excel_quote_with_wrong_location_is_relocated_when_unique() -> None:
     report = EvidenceValidator().validate(
         make_document(file_type="xlsx", source_type=SourceType.POLICY_MATRIX),
         [excel_chunk("r1", "col=texto clave", "Hoja", "2", 1)],
@@ -252,7 +402,76 @@ def test_excel_quote_with_wrong_location_is_invalid_location() -> None:
         ),
     )
 
-    assert status_of(report, "ev-1") == EvidenceValidationStatus.INVALID_LOCATION
+    assert status_of(report, "ev-1") == EvidenceValidationStatus.VERIFIED
+    assert report.items[0].sheet_name == "Hoja"
+    assert report.items[0].row_reference == "2"
+
+
+def test_pdf_quote_with_partial_overlap_on_declared_page_is_verified() -> None:
+    report = EvidenceValidator().validate(
+        make_document(),
+        [
+            pdf_chunk(
+                "p1",
+                "El documento analiza tendencias de espectro, redes 5G y politicas regulatorias.",
+                1,
+                1,
+            )
+        ],
+        document_payload(
+            [
+                evidence(
+                    quote="tendencias espectro redes politicas regulatorias",
+                    page_number=1,
+                )
+            ]
+        ),
+    )
+
+    assert report.is_valid is True
+    assert report.items[0].matched_chunk_id == "p1"
+
+
+def test_excel_quote_with_repeated_match_on_declared_sheet_is_verified() -> None:
+    report = EvidenceValidator().validate(
+        make_document(file_type="xlsx", source_type=SourceType.POLICY_MATRIX),
+        [
+            excel_chunk(
+                "r1",
+                "linea=Adopcion de ambientes de TI para la innovacion",
+                "PLAN_ESTRATEGICO",
+                "8",
+                1,
+            ),
+            excel_chunk(
+                "r2",
+                "linea=Adopcion de ambientes de TI para la innovacion",
+                "PLAN_ESTRATEGICO",
+                "12",
+                2,
+            ),
+            excel_chunk(
+                "r3",
+                "linea=Adopcion de ambientes de TI para la innovacion",
+                "POA_CONSOLIDADOS METAS",
+                "20",
+                3,
+            ),
+        ],
+        document_payload(
+            [
+                evidence(
+                    quote="Adopcion de ambientes de TI para la innovacion",
+                    page_number=None,
+                    sheet_name="PLAN_ESTRATEGICO",
+                    row_reference="10",
+                )
+            ]
+        ),
+    )
+
+    assert report.is_valid is True
+    assert report.items[0].sheet_name == "PLAN_ESTRATEGICO"
 
 
 def test_missing_evidence_id_reference_is_reported() -> None:
@@ -264,6 +483,27 @@ def test_missing_evidence_id_reference_is_reported() -> None:
 
     assert status_of(report, "ev-no-existe") == EvidenceValidationStatus.MISSING_REFERENCE
     assert report.is_valid is False
+
+
+def test_unreferenced_evidence_entries_are_still_validated() -> None:
+    report = EvidenceValidator().validate(
+        make_document(),
+        [
+            pdf_chunk("p1", "texto clave", 1, 1),
+            pdf_chunk("p2", "evidencia de portada", 2, 2),
+        ],
+        document_payload(
+            [
+                evidence("ev-1", quote="texto clave", page_number=1),
+                evidence("E1_cover", quote="evidencia de portada", page_number=2),
+            ],
+            evidence_ids=["ev-1"],
+        ),
+    )
+
+    assert report.is_valid is True
+    assert status_of(report, "ev-1") == EvidenceValidationStatus.VERIFIED
+    assert status_of(report, "E1_cover") == EvidenceValidationStatus.VERIFIED
 
 
 def test_duplicate_temporary_id_is_reported() -> None:

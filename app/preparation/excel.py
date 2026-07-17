@@ -11,6 +11,7 @@ import pandas as pd
 
 from app.documents.models import DocumentChunk
 from app.preparation.errors import DocumentPreparationError
+from app.preparation.text_cleaning import clean_chunk_text
 
 
 class ExcelDocumentPreparer:
@@ -88,14 +89,15 @@ class ExcelDocumentPreparer:
         row_reference: str,
         position: int,
     ) -> DocumentChunk:
+        cleaned_text = clean_chunk_text(text)
         return DocumentChunk(
             id=str(uuid4()),
             document_id=document_id,
-            content=text,
+            content=cleaned_text,
             page_number=None,
             section_title=None,
             sheet_name=sheet_name,
             row_reference=row_reference,
-            content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            content_hash=hashlib.sha256(cleaned_text.encode("utf-8")).hexdigest(),
             position=position,
         )

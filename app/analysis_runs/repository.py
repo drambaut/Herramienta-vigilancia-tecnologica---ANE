@@ -16,6 +16,12 @@ class AnalysisRunRepository(Protocol):
     def get_run(self, run_id: str) -> AnalysisRun | None:
         """Obtiene una ejecucion por ID."""
 
+    def get_active_run_for_snapshot(self, corpus_snapshot_id: str) -> AnalysisRun | None:
+        """Obtiene la ejecucion activa mas reciente para un snapshot."""
+
+    def get_latest_active_run(self) -> AnalysisRun | None:
+        """Obtiene la ejecucion activa mas reciente."""
+
     def list_stages(self, run_id: str) -> list[AnalysisStageRun]:
         """Lista las etapas de una ejecucion en orden canonico."""
 
@@ -58,4 +64,9 @@ class AnalysisRunRepository(Protocol):
         self, run_id: str, stage: AnalysisStage
     ) -> list[AnalysisStageRun]:
         """Prepara el reintento explicito de una etapa fallida."""
+
+    def fail_incomplete_run_for_retry(
+        self, run_id: str, *, error_message: str
+    ) -> AnalysisRun:
+        """Marca una ejecucion incompleta como failed para habilitar retry."""
 

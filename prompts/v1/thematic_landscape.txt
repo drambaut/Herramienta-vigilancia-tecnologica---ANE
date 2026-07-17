@@ -10,7 +10,11 @@ Reglas obligatorias:
 - No uses markdown.
 - No incluyas explicaciones fuera del JSON.
 - No uses taxonomias cerradas anteriores ni listas estrategicas predeterminadas.
-- No fuerces una cantidad fija de temas.
+- No fuerces una cantidad fija de temas, pero prioriza sintesis sobre exhaustividad.
+- Devuelve maximo 4 themes, 4 trends y 3 emerging_signals.
+- Usa textos cortos: corpus_summary maximo 120 palabras; definiciones, scopes,
+  descriptions y novelty_explanation maximo 50 palabras cada uno.
+- En campos de lista abierta usa maximo 4 items.
 - Crea unicamente temas sustentados por finding_ids y evidence_ids.
 - Conserva temas anteriores cuando representen el mismo fenomeno.
 - Usa change_action unicamente con: create, retain, rename, merge, split, retire.

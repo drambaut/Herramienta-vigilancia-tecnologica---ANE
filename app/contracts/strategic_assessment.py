@@ -6,6 +6,7 @@ LEVEL_VALUES = ["Alta", "Media", "Baja"]
 ALIGNMENT_TYPE_VALUES = ["strong", "partial", "weak", "none", "tension"]
 ID_LIST = {"type": "array", "items": {"type": "string", "minLength": 1}}
 DIMENSION_VALUE = {"type": "number", "minimum": 0, "maximum": 5}
+SHORT_TEXT = {"type": "string", "maxLength": 700}
 
 IMPORTANCE_DIMENSIONS_SCHEMA = {
     "type": "object",
@@ -83,7 +84,7 @@ IMPORTANCE_ASSESSMENT_SCHEMA = {
         "subject_id": {"type": "string", "minLength": 1},
         "dimensions": IMPORTANCE_DIMENSIONS_SCHEMA,
         "level": {"type": "string", "enum": LEVEL_VALUES},
-        "rationale": {"type": "string"},
+        "rationale": SHORT_TEXT,
         "evidence_ids": EVIDENCE_IDS,
         "confidence": CONFIDENCE,
     },
@@ -109,8 +110,8 @@ OPPORTUNITY_ASSESSMENT_SCHEMA = {
         "policy_activity_ids": ID_LIST,
         "dimensions": OPPORTUNITY_DIMENSIONS_SCHEMA,
         "level": {"type": "string", "enum": LEVEL_VALUES},
-        "rationale": {"type": "string"},
-        "suggested_action": {"type": "string"},
+        "rationale": SHORT_TEXT,
+        "suggested_action": SHORT_TEXT,
         "evidence_ids": EVIDENCE_IDS,
         "confidence": CONFIDENCE,
     },
@@ -136,7 +137,7 @@ ALIGNMENT_ASSESSMENT_SCHEMA = {
         "pmge_project_ids": ID_LIST,
         "dimensions": ALIGNMENT_DIMENSIONS_SCHEMA,
         "level": {"type": "string", "enum": LEVEL_VALUES},
-        "rationale": {"type": "string"},
+        "rationale": SHORT_TEXT,
         "alignment_type": {"type": "string", "enum": ALIGNMENT_TYPE_VALUES},
         "evidence_ids": EVIDENCE_IDS,
         "confidence": CONFIDENCE,
@@ -154,8 +155,14 @@ STRATEGIC_ASSESSMENT_SCHEMA = {
         "alignment_assessments",
     ],
     "properties": {
-        "importance_assessments": array_of(IMPORTANCE_ASSESSMENT_SCHEMA, min_items=0),
-        "opportunity_assessments": array_of(OPPORTUNITY_ASSESSMENT_SCHEMA, min_items=0),
-        "alignment_assessments": array_of(ALIGNMENT_ASSESSMENT_SCHEMA, min_items=0),
+        "importance_assessments": array_of(
+            IMPORTANCE_ASSESSMENT_SCHEMA, min_items=0, max_items=5
+        ),
+        "opportunity_assessments": array_of(
+            OPPORTUNITY_ASSESSMENT_SCHEMA, min_items=0, max_items=5
+        ),
+        "alignment_assessments": array_of(
+            ALIGNMENT_ASSESSMENT_SCHEMA, min_items=0, max_items=5
+        ),
     },
 }

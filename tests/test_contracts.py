@@ -168,6 +168,9 @@ def test_thematic_landscape_uses_open_themes_and_expected_enums() -> None:
         "evidence_ids",
     ]
     assert "enum" not in _properties(theme)["name"]
+    assert properties["corpus_summary"]["maxLength"] <= 1200
+    assert properties["themes"]["maxItems"] == 4
+    assert properties["trends"]["maxItems"] == 4
     assert _properties(theme)["change_action"]["enum"] == CHANGE_ACTION_VALUES
     assert _properties(trend)["direction"]["enum"] == TREND_DIRECTION_VALUES
     assert "strategic_topic" not in json.dumps(THEMATIC_LANDSCAPE_SCHEMA)
@@ -184,6 +187,7 @@ def test_regulatory_intelligence_relationship_enum_and_backend_ids() -> None:
         "evidence_ids",
     ]
     assert properties["relationship_type"]["enum"] == RELATIONSHIP_TYPE_VALUES
+    assert _properties(REGULATORY_INTELLIGENCE_SCHEMA)["analyses"]["maxItems"] == 5
     assert properties["agenda_item_ids"]["items"]["type"] == "string"
     assert "theme_id" in properties
     assert "theme_temporary_id" in properties
@@ -198,6 +202,9 @@ def test_strategic_assessment_separates_collections_and_has_no_total_score() -> 
         "alignment_assessments",
     ]
     assert set(properties) == set(STRATEGIC_ASSESSMENT_SCHEMA["required"])
+    assert properties["importance_assessments"]["maxItems"] == 5
+    assert properties["opportunity_assessments"]["maxItems"] == 5
+    assert properties["alignment_assessments"]["maxItems"] == 5
     encoded = json.dumps(STRATEGIC_ASSESSMENT_SCHEMA)
     assert "score" not in encoded
     assert "weight" not in encoded

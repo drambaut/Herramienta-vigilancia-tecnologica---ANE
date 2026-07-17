@@ -27,6 +27,7 @@ from app.preparation.errors import (
 from app.preparation.excel import ExcelDocumentPreparer
 from app.preparation.pdf import PdfDocumentPreparer
 from app.preparation.service import DocumentPreparationService
+from app.preparation.text_cleaning import clean_chunk_text
 
 
 def make_pdf_bytes(texts: list[str]) -> bytes:
@@ -99,6 +100,10 @@ def test_pdf_preparer_extracts_multiple_pages_with_page_number() -> None:
     assert [chunk.page_number for chunk in chunks] == [1, 2]
     assert [chunk.position for chunk in chunks] == [1, 2]
     assert all(chunk.sheet_name is None for chunk in chunks)
+
+
+def test_clean_chunk_text_removes_postgres_incompatible_nul() -> None:
+    assert clean_chunk_text("antes\0despues") == "antesdespues"
 
 
 def test_pdf_preparer_preserves_empty_pages_when_document_has_text() -> None:

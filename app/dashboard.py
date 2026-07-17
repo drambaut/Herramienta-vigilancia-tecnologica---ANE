@@ -1,9 +1,10 @@
-"""Dashboard ejecutivo del MVP, alimentado exclusivamente desde ``demo_data``."""
+"""Dashboard ejecutivo: modo Supabase publicado o modo demo con ``demo_data``."""
 from __future__ import annotations
 
 import ast
 import html
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -18,6 +19,22 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.dashboard_data_builder import build_regulatory_map, build_regulatory_trends
+from app.analysis_runs.supabase_repository import SupabaseAnalysisRunRepository
+from app.core.settings import load_settings
+from app.corpus_snapshots.supabase_repository import SupabaseCorpusSnapshotRepository
+from app.dashboard_read.errors import (
+    IncompletePublishedRunError,
+    NoPublishedAnalysisRunError,
+)
+from app.dashboard_read.models import DashboardReadModel
+from app.dashboard_read.service import DashboardReadService
+from app.dashboard_read.supabase_repositories import (
+    SupabaseDashboardDocumentReadRepository,
+    SupabaseDashboardResultReadRepository,
+)
+from app.documents.models import SourceType
+from app.workflows.manual_processing import ManualDocumentProcessingWorkflowError
+from run_manual_processing import build_manual_processing_workflow
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEMO_DATA_DIR = PROJECT_ROOT / "demo_data"
@@ -51,6 +68,17 @@ COLOR_GRAY = "#6b6f7b"
 COLOR_LIGHT_BLUE = "#5B8CCB"
 COLOR_LIGHT_GREEN = "#57B8A9"
 PALETTE = [COLOR_BLUE, COLOR_GREEN, COLOR_ORANGE, COLOR_PURPLE, COLOR_GRAY]
+
+DASHBOARD_DATA_SOURCE_ENV = "DASHBOARD_DATA_SOURCE"
+DASHBOARD_DATA_SOURCE_AUTO = "auto"
+DASHBOARD_DATA_SOURCE_DEMO = "demo"
+DASHBOARD_DATA_SOURCE_SUPABASE = "supabase"
+PUBLIC_UPLOAD_TYPES = ("pdf", "xls", "xlsx")
+PUBLIC_UPLOAD_SOURCE_LABELS = {
+    SourceType.SURVEILLANCE.value: "Vigilancia",
+    SourceType.INSTITUTIONAL_PLAN.value: "PMGE + Agenda Regulatoria",
+    SourceType.POLICY_MATRIX.value: "Matriz de politicas",
+}
 
 GLOBAL_CSS = f"""
 <style>
@@ -255,6 +283,240 @@ def render_metric_card(label: Any, value: Any, delta: Any = None, delta_type: st
 def render_section_title(title: Any, tag: Any = None) -> None:
     tag_html = f'<span class="section-tag">{html.escape(str(tag))}</span>' if tag else ""
     st.markdown(f'<div class="section-title">{html.escape(str(title))}{tag_html}</div>', unsafe_allow_html=True)
+
+
+def dashboard_data_source(environ: dict[str, str] | None = None) -> str:
+    source_env = environ or os.environ
+    source = source_env.get(DASHBOARD_DATA_SOURCE_ENV, DASHBOARD_DATA_SOURCE_AUTO)
+    normalized = source.strip().lower() or DASHBOARD_DATA_SOURCE_AUTO
+    if normalized == DASHBOARD_DATA_SOURCE_AUTO:
+        settings = load_settings(environ=source_env)
+        if settings.supabase_url and settings.supabase_key:
+            return DASHBOARD_DATA_SOURCE_SUPABASE
+        return DASHBOARD_DATA_SOURCE_DEMO
+    if normalized not in {DASHBOARD_DATA_SOURCE_DEMO, DASHBOARD_DATA_SOURCE_SUPABASE}:
+        return DASHBOARD_DATA_SOURCE_DEMO
+    return normalized
+
+
+def build_supabase_dashboard_service() -> DashboardReadService:
+    settings = load_settings()
+    return DashboardReadService(
+        analysis_runs=SupabaseAnalysisRunRepository(settings=settings),
+        snapshots=SupabaseCorpusSnapshotRepository(settings=settings),
+        documents=SupabaseDashboardDocumentReadRepository(settings=settings),
+        results=SupabaseDashboardResultReadRepository(settings=settings),
+    )
+
+
+def load_published_dashboard_model(
+    service: DashboardReadService | None = None,
+) -> DashboardReadModel:
+    return (service or build_supabase_dashboard_service()).get_published_dashboard()
+
+
+def upload_content_type(file_name: str) -> str:
+    extension = Path(file_name).suffix.lower()
+    if extension == ".pdf":
+        return "application/pdf"
+    if extension == ".xls":
+        return "application/vnd.ms-excel"
+    if extension == ".xlsx":
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return "application/octet-stream"
+
+
+def public_upload_metadata(provider: str, *, smoke: bool) -> dict[str, str]:
+    normalized_provider = provider.strip() or "dashboard"
+    return {
+        "origin": "dashboard_upload",
+        "provider": normalized_provider,
+        "smoke": "true" if smoke else "false",
+    }
+
+
+def render_supabase_upload_panel(
+    workflow_factory=build_manual_processing_workflow,
+) -> None:
+    with st.sidebar.expander("Cargar documento", expanded=False):
+        st.caption(
+            "Carga publica temporal. Procesa PDF/Excel en Supabase y Gemini; "
+            "para verlo en el dashboard hay que publicar un nuevo analisis transversal."
+        )
+        uploaded_file = st.file_uploader(
+            "PDF o Excel",
+            type=list(PUBLIC_UPLOAD_TYPES),
+            accept_multiple_files=False,
+            key="supabase_public_upload",
+        )
+        source_type_value = st.selectbox(
+            "Tipo de fuente",
+            options=list(PUBLIC_UPLOAD_SOURCE_LABELS),
+            format_func=lambda value: PUBLIC_UPLOAD_SOURCE_LABELS[value],
+            key="supabase_public_upload_source_type",
+        )
+        provider = st.text_input(
+            "Proveedor / origen",
+            value="dashboard",
+            key="supabase_public_upload_provider",
+        )
+        smoke = st.checkbox(
+            "Modo smoke tecnico",
+            value=True,
+            help="Extrae una muestra pequena para validar carga y procesamiento.",
+            key="supabase_public_upload_smoke",
+        )
+        if st.button(
+            "Subir y procesar",
+            disabled=uploaded_file is None,
+            key="supabase_public_upload_submit",
+        ):
+            if uploaded_file is None:
+                st.warning("Selecciona un archivo PDF, XLS o XLSX.")
+                return
+            file_name = uploaded_file.name
+            extension = Path(file_name).suffix.lower().lstrip(".")
+            if extension not in PUBLIC_UPLOAD_TYPES:
+                st.error("Formato no soportado. Usa PDF, XLS o XLSX.")
+                return
+            metadata = public_upload_metadata(provider, smoke=smoke)
+            try:
+                with st.spinner("Procesando documento..."):
+                    result = workflow_factory().run(
+                        file_name=file_name,
+                        file_bytes=uploaded_file.getvalue(),
+                        source_type=SourceType(source_type_value),
+                        metadata=metadata,
+                        content_type=upload_content_type(file_name),
+                    )
+            except ManualDocumentProcessingWorkflowError as exc:
+                st.error(f"No se pudo procesar el documento en {exc.stage}.")
+                st.caption(str(exc.original_error))
+                return
+            except Exception as exc:
+                st.error("No se pudo procesar el documento.")
+                st.caption(str(exc))
+                return
+            st.success(f"Documento procesado: {result.document.file_name}")
+            st.caption(f"document_id={result.document.id}")
+            st.info(
+                "Para que aparezca en el dashboard publicado, ejecuta un nuevo "
+                "analisis transversal y publica la version resultante."
+            )
+
+
+def render_supabase_dashboard(model: DashboardReadModel) -> None:
+    summary = model.summary
+    st.sidebar.markdown(
+        render_metric_card("Publicacion vigente", summary.published_at or "S/F"),
+        unsafe_allow_html=True,
+    )
+    st.markdown("## Panorama estrategico publicado")
+    st.caption(
+        "Datos leidos desde DashboardReadService; no se recalculan scores, no se llama Gemini y no se leen archivos originales."
+    )
+    metrics = [
+        ("Documentos", summary.document_count),
+        ("Hallazgos", summary.finding_count),
+        ("Evidencias", summary.evidence_count),
+        ("Temas", model.strategic_overview.theme_count),
+        ("Tendencias", model.strategic_overview.trend_count),
+        ("Senales", model.strategic_overview.emerging_signal_count),
+    ]
+    st.markdown(
+        '<div class="metric-grid">'
+        + "".join(render_metric_card(label, value) for label, value in metrics)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    tabs = st.tabs(
+        [
+            "Temas",
+            "Inteligencia regulatoria",
+            "Oportunidades",
+            "Alineacion PMGE",
+            "Documentos",
+        ]
+    )
+    with tabs[0]:
+        _render_read_model_table(
+            [
+                {
+                    "Tema": item.name,
+                    "Alcance": item.scope,
+                    "Confianza": item.confidence,
+                    "Hallazgos": len(item.finding_ids),
+                }
+                for item in model.themes
+            ],
+            "No hay temas publicados.",
+        )
+    with tabs[1]:
+        _render_read_model_table(
+            [
+                {
+                    "Situacion internacional": item.international_situation,
+                    "Relacion agenda": item.relationship_type,
+                    "Implicaciones ANE": item.implications_for_ane,
+                    "Confianza": item.confidence,
+                }
+                for item in model.regulatory_intelligence
+            ],
+            "No hay inteligencia regulatoria publicada.",
+        )
+    with tabs[2]:
+        _render_read_model_table(
+            [
+                {
+                    "Tema": item.theme_id,
+                    "Score": item.opportunity_score,
+                    "Nivel": item.level,
+                    "Accion sugerida": item.suggested_action,
+                }
+                for item in model.opportunities
+            ],
+            "No hay oportunidades publicadas.",
+        )
+    with tabs[3]:
+        _render_read_model_table(
+            [
+                {
+                    "Tema": item.theme_id,
+                    "Score": item.alignment_score,
+                    "Nivel": item.level,
+                    "Tipo": item.alignment_type,
+                }
+                for item in model.pmge_alignment
+            ],
+            "No hay alineacion PMGE publicada.",
+        )
+    with tabs[4]:
+        _render_read_model_table(
+            [
+                {
+                    "Archivo": item.file_name,
+                    "Tipo": item.file_type,
+                    "Fuente": item.source_type,
+                    "Estado": item.status,
+                }
+                for item in model.documents
+            ],
+            "No hay documentos publicados.",
+        )
+
+
+def _render_read_model_table(rows: list[dict[str, Any]], empty_message: str) -> None:
+    if not rows:
+        st.info(empty_message)
+        return
+    st.table(pd.DataFrame(rows))
+
+
+def render_no_published_dashboard_state(message: str | None = None) -> None:
+    st.info(
+        message
+        or "Todavia no hay una publicacion vigente. Procesa documentos y publica un analisis transversal para activar el dashboard Supabase."
+    )
 
 
 def render_card_start() -> None:
@@ -1346,6 +1608,16 @@ def main() -> None:
     st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
     st.title("Vigilancia Tecnológica — PMGE 2026-2030 / Agenda ANE 2027-2028")
     st.caption("Insumo técnico para formulación de agenda regulatoria · señales derivadas de fuentes documentales externas e institucionales")
+    if dashboard_data_source() == DASHBOARD_DATA_SOURCE_SUPABASE:
+        render_supabase_upload_panel()
+        try:
+            render_supabase_dashboard(load_published_dashboard_model())
+        except NoPublishedAnalysisRunError:
+            render_no_published_dashboard_state()
+        except IncompletePublishedRunError as exc:
+            render_no_published_dashboard_state(str(exc))
+        return
+
     data = load_demo_data()
     records = data.get("dashboard_records", pd.DataFrame())
     if records.empty:

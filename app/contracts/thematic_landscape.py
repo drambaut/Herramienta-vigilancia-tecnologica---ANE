@@ -4,7 +4,6 @@ from app.contracts.common import (
     CONFIDENCE,
     EVIDENCE_IDS,
     EXTRACTION_BASIS,
-    OPEN_TEXT_LIST,
     TEMPORARY_ID,
     array_of,
 )
@@ -13,7 +12,18 @@ CHANGE_ACTION_VALUES = ["create", "retain", "rename", "merge", "split", "retire"
 TREND_DIRECTION_VALUES = ["emerging", "growing", "stable", "declining", "uncertain"]
 TIME_HORIZON_VALUES = ["short_term", "medium_term", "long_term", "uncertain"]
 
-ID_LIST = {"type": "array", "items": {"type": "string", "minLength": 1}}
+ID_LIST = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1},
+    "maxItems": 8,
+}
+SHORT_TEXT = {"type": "string", "maxLength": 600}
+MEDIUM_TEXT = {"type": "string", "maxLength": 1200}
+OPEN_TEXT_LIST = {
+    "type": "array",
+    "items": {"type": "string", "maxLength": 160},
+    "maxItems": 6,
+}
 
 THEME_SCHEMA = {
     "type": "object",
@@ -37,9 +47,9 @@ THEME_SCHEMA = {
     ],
     "properties": {
         "temporary_id": TEMPORARY_ID,
-        "name": {"type": "string"},
-        "definition": {"type": "string"},
-        "scope": {"type": "string"},
+        "name": SHORT_TEXT,
+        "definition": SHORT_TEXT,
+        "scope": SHORT_TEXT,
         "subthemes": OPEN_TEXT_LIST,
         "technologies": OPEN_TEXT_LIST,
         "frequency_bands": OPEN_TEXT_LIST,
@@ -72,8 +82,8 @@ TREND_SCHEMA = {
     ],
     "properties": {
         "temporary_id": TEMPORARY_ID,
-        "name": {"type": "string"},
-        "description": {"type": "string"},
+        "name": SHORT_TEXT,
+        "description": SHORT_TEXT,
         "related_theme_temporary_ids": ID_LIST,
         "direction": {"type": "string", "enum": TREND_DIRECTION_VALUES},
         "time_horizon": {"type": "string", "enum": TIME_HORIZON_VALUES},
@@ -102,9 +112,9 @@ EMERGING_SIGNAL_SCHEMA = {
     ],
     "properties": {
         "temporary_id": TEMPORARY_ID,
-        "title": {"type": "string"},
-        "description": {"type": "string"},
-        "novelty_explanation": {"type": "string"},
+        "title": SHORT_TEXT,
+        "description": SHORT_TEXT,
+        "novelty_explanation": SHORT_TEXT,
         "related_theme_temporary_ids": ID_LIST,
         "finding_ids": ID_LIST,
         "evidence_ids": EVIDENCE_IDS,
@@ -119,10 +129,10 @@ THEMATIC_LANDSCAPE_SCHEMA = {
     "additionalProperties": False,
     "required": ["corpus_summary", "themes", "trends", "emerging_signals", "evidence_ids"],
     "properties": {
-        "corpus_summary": {"type": "string"},
-        "themes": array_of(THEME_SCHEMA, min_items=0),
-        "trends": array_of(TREND_SCHEMA, min_items=0),
-        "emerging_signals": array_of(EMERGING_SIGNAL_SCHEMA, min_items=0),
+        "corpus_summary": MEDIUM_TEXT,
+        "themes": array_of(THEME_SCHEMA, min_items=0, max_items=4),
+        "trends": array_of(TREND_SCHEMA, min_items=0, max_items=4),
+        "emerging_signals": array_of(EMERGING_SIGNAL_SCHEMA, min_items=0, max_items=3),
         "evidence_ids": EVIDENCE_IDS,
     },
 }

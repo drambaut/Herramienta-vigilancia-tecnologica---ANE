@@ -17,6 +17,14 @@ from app.evidence.models import (
 class EvidenceValidator:
     """Comprueba citas literales contra chunks preparados."""
 
+    _MIN_COMPACT_MATCH_LENGTH = 20
+    _MIN_FUZZY_TOKENS = 8
+    _MIN_FUZZY_COVERAGE = 0.88
+    _MIN_EXCEL_LOCATION_TOKENS = 3
+    _MIN_EXCEL_LOCATION_COVERAGE = 0.45
+    _MIN_PDF_LOCATION_TOKENS = 4
+    _MIN_PDF_LOCATION_COVERAGE = 0.45
+
     def validate(
         self,
         document: Document,
@@ -33,7 +41,9 @@ class EvidenceValidator:
             else:
                 evidence_by_id[evidence_id] = evidence
 
-        referenced_ids = self._collect_evidence_ids(payload)
+        evidence_ids_to_validate = self._ordered_unique(
+            [*self._collect_evidence_ids(payload), *evidence_by_id.keys()]
+        )
         items: list[EvidenceValidationItem] = []
 
         for evidence_id in sorted(duplicate_ids):
@@ -49,7 +59,7 @@ class EvidenceValidator:
                 )
             )
 
-        for evidence_id in referenced_ids:
+        for evidence_id in evidence_ids_to_validate:
             evidence = evidence_by_id.get(evidence_id)
             if evidence is None:
                 items.append(
@@ -110,11 +120,19 @@ class EvidenceValidator:
         match = self._first_match(page_chunks, quote)
         if match is not None:
             return self._verified(evidence, match)
-        if self._first_match(chunks, quote) is not None:
+        if page_chunks:
+            partial_match = self._first_pdf_location_match(page_chunks, quote)
+            if partial_match is not None:
+                return self._verified(evidence, partial_match)
+
+        matches = self._matches(chunks, quote)
+        if len(matches) == 1:
+            return self._verified(evidence, matches[0])
+        if matches:
             return self._item(
                 evidence["temporary_id"],
                 EvidenceValidationStatus.INVALID_LOCATION,
-                "La cita existe, pero no en la pagina declarada.",
+                "La cita existe, pero no en una ubicacion unica.",
                 evidence,
             )
         return self._item(
@@ -135,16 +153,33 @@ class EvidenceValidator:
         location_chunks = [
             chunk
             for chunk in chunks
-            if chunk.sheet_name == sheet_name and chunk.row_reference == row_reference
+            if chunk.sheet_name == sheet_name
+            and self._row_reference_matches(chunk.row_reference, row_reference)
         ]
         match = self._first_match(location_chunks, quote)
         if match is not None:
             return self._verified(evidence, match)
-        if self._first_match(chunks, quote) is not None:
+        if location_chunks:
+            partial_match = self._first_excel_location_match(location_chunks, quote)
+            if partial_match is not None:
+                return self._verified(evidence, partial_match)
+
+        sheet_chunks = [chunk for chunk in chunks if chunk.sheet_name == sheet_name]
+        sheet_match = self._first_match(sheet_chunks, quote)
+        if sheet_match is not None:
+            return self._verified(evidence, sheet_match)
+        sheet_partial_match = self._first_excel_location_match(sheet_chunks, quote)
+        if sheet_partial_match is not None:
+            return self._verified(evidence, sheet_partial_match)
+
+        matches = self._matches(chunks, quote)
+        if len(matches) == 1:
+            return self._verified(evidence, matches[0])
+        if matches:
             return self._item(
                 evidence["temporary_id"],
                 EvidenceValidationStatus.INVALID_LOCATION,
-                "La cita existe, pero no en la hoja/fila declarada.",
+                "La cita existe, pero no en una ubicacion unica.",
                 evidence,
             )
         return self._item(
@@ -205,18 +240,102 @@ class EvidenceValidator:
     def _first_match(
         self, chunks: Sequence[DocumentChunk], quote: str
     ) -> DocumentChunk | None:
+        matches = self._matches(chunks, quote)
+        return matches[0] if matches else None
+
+    def _matches(
+        self, chunks: Sequence[DocumentChunk], quote: str
+    ) -> list[DocumentChunk]:
+        return [chunk for chunk in chunks if self._contains(chunk.content, quote)]
+
+    def _contains(self, content: str, quote: str) -> bool:
+        normalized_content = self._normalize(content)
+        normalized_quote = self._normalize(quote)
+        if not normalized_quote:
+            return False
+        if normalized_quote in normalized_content:
+            return True
+
+        # PDF text extraction often changes punctuation, line breaks, hyphenation
+        # or ligatures. Keep this near-literal: enough text must still match.
+        compact_quote = self._compact(normalized_quote)
+        compact_content = self._compact(normalized_content)
+        if (
+            len(compact_quote) >= self._MIN_COMPACT_MATCH_LENGTH
+            and compact_quote in compact_content
+        ):
+            return True
+
+        return self._has_high_token_overlap(normalized_content, normalized_quote)
+
+    def _normalize(self, value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value).replace("\u00ad", "")
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip().casefold()
+
+    def _compact(self, value: str) -> str:
+        return re.sub(r"[^0-9a-záéíóúñü]+", "", value, flags=re.IGNORECASE)
+
+    def _has_high_token_overlap(self, content: str, quote: str) -> bool:
+        quote_tokens = self._significant_tokens(quote)
+        if len(quote_tokens) < self._MIN_FUZZY_TOKENS:
+            return False
+        content_tokens = set(self._significant_tokens(content))
+        if not content_tokens:
+            return False
+        matched = sum(1 for token in quote_tokens if token in content_tokens)
+        return matched / len(quote_tokens) >= self._MIN_FUZZY_COVERAGE
+
+    def _first_excel_location_match(
+        self, chunks: Sequence[DocumentChunk], quote: str
+    ) -> DocumentChunk | None:
+        quote_tokens = self._significant_tokens(self._normalize(quote))
+        if len(quote_tokens) < self._MIN_EXCEL_LOCATION_TOKENS:
+            return None
         for chunk in chunks:
-            if self._contains(chunk.content, quote):
+            content_tokens = set(self._significant_tokens(self._normalize(chunk.content)))
+            if not content_tokens:
+                continue
+            matched = sum(1 for token in quote_tokens if token in content_tokens)
+            if matched / len(quote_tokens) >= self._MIN_EXCEL_LOCATION_COVERAGE:
                 return chunk
         return None
 
-    def _contains(self, content: str, quote: str) -> bool:
-        return self._normalize(quote) in self._normalize(content)
+    def _first_pdf_location_match(
+        self, chunks: Sequence[DocumentChunk], quote: str
+    ) -> DocumentChunk | None:
+        quote_tokens = self._significant_tokens(self._normalize(quote))
+        if len(quote_tokens) < self._MIN_PDF_LOCATION_TOKENS:
+            return None
+        for chunk in chunks:
+            content_tokens = set(self._significant_tokens(self._normalize(chunk.content)))
+            if not content_tokens:
+                continue
+            matched = sum(1 for token in quote_tokens if token in content_tokens)
+            if matched / len(quote_tokens) >= self._MIN_PDF_LOCATION_COVERAGE:
+                return chunk
+        return None
 
-    def _normalize(self, value: str) -> str:
-        normalized = unicodedata.normalize("NFKC", value)
-        normalized = re.sub(r"\s+", " ", normalized)
-        return normalized.strip().casefold()
+    def _significant_tokens(self, value: str) -> list[str]:
+        tokens = re.findall(r"[0-9a-záéíóúñü]+", value, flags=re.IGNORECASE)
+        return [token for token in tokens if len(token) >= 3]
+
+    def _row_reference_matches(
+        self, chunk_reference: str | None, evidence_reference: str | None
+    ) -> bool:
+        return self._normalize_row_reference(chunk_reference) == (
+            self._normalize_row_reference(evidence_reference)
+        )
+
+    def _normalize_row_reference(self, value: str | None) -> str:
+        normalized = self._normalize(str(value or ""))
+        normalized = re.sub(
+            r"^(row_reference|row|fila)\s*:?\s*",
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        return normalized.strip()
 
     def _collect_evidence_ids(self, value) -> list[str]:
         found: list[str] = []
@@ -233,3 +352,13 @@ class EvidenceValidator:
         elif isinstance(value, list):
             for item in value:
                 self._walk_evidence_ids(item, found)
+
+    def _ordered_unique(self, values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            ordered.append(value)
+        return ordered

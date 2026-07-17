@@ -9,6 +9,7 @@ import fitz
 
 from app.documents.models import DocumentChunk
 from app.preparation.errors import DocumentPreparationError, OcrRequiredError
+from app.preparation.text_cleaning import clean_chunk_text
 
 
 class PdfDocumentPreparer:
@@ -28,7 +29,7 @@ class PdfDocumentPreparer:
             chunks: list[DocumentChunk] = []
             with fitz.open(stream=content, filetype="pdf") as document:
                 for index, page in enumerate(document, start=1):
-                    text = page.get_text("text")
+                    text = clean_chunk_text(page.get_text("text"))
                     chunks.append(
                         DocumentChunk(
                             id=str(uuid4()),

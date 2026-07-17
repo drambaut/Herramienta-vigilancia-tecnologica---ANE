@@ -451,6 +451,13 @@ def test_invalid_relationship_type_is_rejected() -> None:
     assert "rule=enum" in message
 
 
+def test_regulatory_analysis_without_theme_reference_is_allowed() -> None:
+    payload = regulatory_payload()
+    del payload["analyses"][0]["theme_id"]
+
+    assert validate_regulatory_intelligence(payload) == payload
+
+
 def test_strategic_dimension_above_five_is_rejected_with_readable_path() -> None:
     payload = strategic_payload()
     payload["importance_assessments"][0]["dimensions"]["urgency"] = 6

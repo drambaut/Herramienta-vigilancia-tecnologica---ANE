@@ -21,6 +21,7 @@ from app.corpus_snapshots.context_builder import CorpusContextBuilder
 from app.corpus_snapshots.models import CorpusSnapshot, FrozenDict, PromptContext
 from app.documents.models import Document
 from app.llm.base import LLMInput
+from app.llm.errors import InvalidLLMJSONError
 from app.llm.service import ExtractionResult, StructuredExtractionService
 from app.results.models import PersistenceBundle
 from app.scoring.strategic import score_strategic_assessment
@@ -69,11 +70,13 @@ class TransversalAnalysisWorkflow:
         analysis_run_repository: AnalysisRunRepository,
         strategic_assessment_scorer: Callable[[dict[str, Any]], dict[str, Any]]
         | None = None,
+        use_empty_strategic_assessment: bool = False,
     ) -> None:
         self._snapshot_builder = snapshot_builder
         self._context_builder = context_builder
         self._extraction_service = extraction_service
         self._analysis_runs = analysis_run_repository
+        self._use_empty_strategic_assessment = use_empty_strategic_assessment
         self._strategic_assessment_scorer = (
             strategic_assessment_scorer or score_strategic_assessment
         )
@@ -291,11 +294,21 @@ class TransversalAnalysisWorkflow:
                 "stage": stage_run.stage.value,
             },
         )
-        result = self._extraction_service.extract(
-            prompt_id=stage_run.prompt_id,
-            version=stage_run.prompt_version,
-            input_data=input_data,
-        )
+        if (
+            stage_run.stage == AnalysisStage.STRATEGIC_ASSESSMENT
+            and self._use_empty_strategic_assessment
+        ):
+            return self._empty_strategic_assessment(stage_run)
+        try:
+            result = self._extraction_service.extract(
+                prompt_id=stage_run.prompt_id,
+                version=stage_run.prompt_version,
+                input_data=input_data,
+            )
+        except InvalidLLMJSONError:
+            if stage_run.stage != AnalysisStage.STRATEGIC_ASSESSMENT:
+                raise
+            result = self._empty_strategic_assessment(stage_run)
         if result.contract_name != stage_run.contract_name:
             raise ValueError(
                 f"Contrato inesperado para {stage_run.stage.value}: "
@@ -311,6 +324,21 @@ class TransversalAnalysisWorkflow:
                 model_name=result.model_name,
             )
         return result
+
+    def _empty_strategic_assessment(
+        self, stage_run: AnalysisStageRun
+    ) -> ExtractionResult:
+        return ExtractionResult(
+            payload={
+                "importance_assessments": [],
+                "opportunity_assessments": [],
+                "alignment_assessments": [],
+            },
+            prompt_id=stage_run.prompt_id,
+            prompt_version=stage_run.prompt_version,
+            contract_name=stage_run.contract_name,
+            model_name="fallback-empty-strategic-assessment",
+        )
 
     def _existing_results(self, run_id: str) -> dict[AnalysisStage, ExtractionResult]:
         results: dict[AnalysisStage, ExtractionResult] = {}

@@ -24,6 +24,10 @@ OPENAI_API_KEY = _settings.openai_api_key
 OPENAI_MODEL = _settings.openai_model
 SUPABASE_URL = _settings.supabase_url
 SUPABASE_KEY = _settings.supabase_key
+SUPABASE_SERVICE_ROLE_KEY = _settings.supabase_service_role_key
+SUPABASE_STORAGE_BUCKET = _settings.supabase_storage_bucket
+SUPABASE_STORAGE_FILE_SIZE_LIMIT_BYTES = _settings.storage_file_size_limit_bytes
+SUPABASE_STORAGE_ALLOWED_MIME_TYPES = _settings.storage_allowed_mime_types
 
 
 def ensure_legacy_directories() -> None:

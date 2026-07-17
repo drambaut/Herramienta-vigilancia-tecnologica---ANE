@@ -103,6 +103,23 @@ class InMemoryAnalysisRunRepository:
     def get_run(self, run_id: str) -> AnalysisRun | None:
         return self._runs.get(run_id)
 
+    def get_active_run_for_snapshot(self, corpus_snapshot_id: str) -> AnalysisRun | None:
+        active = [
+            run
+            for run in self._runs.values()
+            if run.corpus_snapshot_id == corpus_snapshot_id
+            and run.status in self._ACTIVE_RUN_STATUSES
+        ]
+        return max(active, key=lambda run: run.created_at) if active else None
+
+    def get_latest_active_run(self) -> AnalysisRun | None:
+        active = [
+            run
+            for run in self._runs.values()
+            if run.status in self._ACTIVE_RUN_STATUSES
+        ]
+        return max(active, key=lambda run: run.created_at) if active else None
+
     def list_stages(self, run_id: str) -> list[AnalysisStageRun]:
         self._require_run(run_id)
         return [
@@ -229,6 +246,45 @@ class InMemoryAnalysisRunRepository:
         for updated in updated_stages:
             self._stages[updated.id] = updated
         return updated_stages
+
+    def fail_incomplete_run_for_retry(
+        self, run_id: str, *, error_message: str
+    ) -> AnalysisRun:
+        run = self._require_run(run_id)
+        if run.status not in self._ACTIVE_RUN_STATUSES:
+            return run
+
+        stages = self.list_stages(run_id)
+        failed_stage = next(
+            (stage for stage in stages if stage.status == AnalysisRunStatus.FAILED),
+            None,
+        )
+        target = failed_stage or next(
+            (
+                stage
+                for stage in stages
+                if stage.status
+                in {AnalysisRunStatus.RUNNING, AnalysisRunStatus.QUEUED}
+            ),
+            None,
+        )
+        if target is not None and target.status != AnalysisRunStatus.FAILED:
+            self._stages[target.id] = replace(
+                target,
+                status=AnalysisRunStatus.FAILED,
+                updated_at=self._clock(),
+                failed_at=self._clock(),
+                error_message=error_message,
+            )
+        failed_run = replace(
+            run,
+            status=AnalysisRunStatus.FAILED,
+            updated_at=self._clock(),
+            failed_at=self._clock(),
+            error_message=error_message,
+        )
+        self._runs[run.id] = failed_run
+        return failed_run
 
     def _require_run(self, run_id: str) -> AnalysisRun:
         run = self._runs.get(run_id)

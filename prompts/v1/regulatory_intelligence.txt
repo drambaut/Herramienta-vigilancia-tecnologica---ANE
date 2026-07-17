@@ -17,6 +17,10 @@ Reglas obligatorias:
 - Explica situacion internacional, debate regulatorio, cobertura de Agenda e implicaciones para la ANE.
 - No produzcas todavia oportunidad, alineacion PMGE, scores ni recomendaciones institucionales obligatorias.
 - No uses taxonomias cerradas anteriores ni listas estrategicas predeterminadas.
+- Devuelve maximo 5 analyses y 5 overall_gaps.
+- Usa textos cortos: international_situation, regulatory_debate,
+  coverage_explanation e implications_for_ane maximo 60 palabras cada uno.
+- En campos de lista abierta usa maximo 4 items.
 - No inventes relaciones.
 - No crees citas textuales nuevas; usa evidence_ids existentes.
 - Si no existe evidencia suficiente para una lista, devuelvela vacia.

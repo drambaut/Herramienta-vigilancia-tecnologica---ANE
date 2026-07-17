@@ -4,7 +4,6 @@ from app.contracts.common import (
     CONFIDENCE,
     EVIDENCE_IDS,
     EXTRACTION_BASIS,
-    OPEN_TEXT_LIST,
     TEMPORARY_ID,
     array_of,
 )
@@ -18,7 +17,17 @@ RELATIONSHIP_TYPE_VALUES = [
     "no_direct_relation",
 ]
 
-ID_LIST = {"type": "array", "items": {"type": "string", "minLength": 1}}
+ID_LIST = {
+    "type": "array",
+    "items": {"type": "string", "minLength": 1},
+    "maxItems": 8,
+}
+SHORT_TEXT = {"type": "string", "maxLength": 700}
+OPEN_TEXT_LIST = {
+    "type": "array",
+    "items": {"type": "string", "maxLength": 180},
+    "maxItems": 6,
+}
 
 REGULATORY_INTELLIGENCE_ITEM_SCHEMA = {
     "type": "object",
@@ -38,22 +47,18 @@ REGULATORY_INTELLIGENCE_ITEM_SCHEMA = {
         "confidence",
         "extraction_basis",
     ],
-    "oneOf": [
-        {"required": ["theme_id"], "not": {"required": ["theme_temporary_id"]}},
-        {"required": ["theme_temporary_id"], "not": {"required": ["theme_id"]}},
-    ],
     "properties": {
         "temporary_id": TEMPORARY_ID,
         "theme_id": {"type": "string", "minLength": 1},
         "theme_temporary_id": {"type": "string", "minLength": 1},
-        "international_situation": {"type": "string"},
-        "regulatory_debate": {"type": "string"},
+        "international_situation": SHORT_TEXT,
+        "regulatory_debate": SHORT_TEXT,
         "countries_regions": OPEN_TEXT_LIST,
         "organizations": OPEN_TEXT_LIST,
         "agenda_item_ids": ID_LIST,
         "relationship_type": {"type": "string", "enum": RELATIONSHIP_TYPE_VALUES},
-        "coverage_explanation": {"type": "string"},
-        "implications_for_ane": {"type": "string"},
+        "coverage_explanation": SHORT_TEXT,
+        "implications_for_ane": SHORT_TEXT,
         "finding_ids": ID_LIST,
         "evidence_ids": EVIDENCE_IDS,
         "confidence": CONFIDENCE,
@@ -68,7 +73,9 @@ REGULATORY_INTELLIGENCE_SCHEMA = {
     "additionalProperties": False,
     "required": ["analyses", "overall_gaps", "evidence_ids"],
     "properties": {
-        "analyses": array_of(REGULATORY_INTELLIGENCE_ITEM_SCHEMA, min_items=0),
+        "analyses": array_of(
+            REGULATORY_INTELLIGENCE_ITEM_SCHEMA, min_items=0, max_items=5
+        ),
         "overall_gaps": OPEN_TEXT_LIST,
         "evidence_ids": EVIDENCE_IDS,
     },

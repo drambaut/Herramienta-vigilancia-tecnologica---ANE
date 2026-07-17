@@ -16,6 +16,7 @@ from app.corpus_snapshots.context_builder import CorpusContextBuilder
 from app.corpus_snapshots.in_memory_repository import InMemoryCorpusSnapshotRepository
 from app.documents.models import Document, DocumentStatus, SourceType
 from app.llm.base import LLMInput
+from app.llm.errors import InvalidLLMJSONError
 from app.llm.service import StructuredExtractionService
 from app.results.models import PersistenceBundle, ResultRecord
 from app.workflows.transversal_analysis import (
@@ -339,6 +340,7 @@ def scored_strategic_payload() -> dict:
 def make_workflow(
     client: FakeTransversalClient | None = None,
     scorer=None,
+    use_empty_strategic_assessment: bool = False,
 ):
     snapshot_repo = InMemoryCorpusSnapshotRepository()
     analysis_repo = InMemoryAnalysisRunRepository(
@@ -353,6 +355,7 @@ def make_workflow(
         extraction_service=StructuredExtractionService(client=client),
         analysis_run_repository=analysis_repo,
         strategic_assessment_scorer=scorer,
+        use_empty_strategic_assessment=use_empty_strategic_assessment,
     )
     return workflow, snapshot_repo, analysis_repo, client
 
@@ -482,6 +485,65 @@ def test_scorer_runs_after_validation_only():
 
     assert exc.value.stage == AnalysisStage.STRATEGIC_ASSESSMENT.value
     assert scorer.calls == []
+
+
+def test_invalid_strategic_json_uses_empty_fallback_without_fabricating_scores():
+    docs, bundles = fixtures()
+    client = FakeTransversalClient()
+
+    def invalid_strategic_json(*, prompt, input_data, response_schema):
+        client.calls.append(
+            {
+                "contract": response_schema["title"],
+                "input_data": input_data,
+                "text": input_data.text,
+                "prompt": prompt,
+            }
+        )
+        if response_schema["title"] == "StrategicAssessment":
+            raise InvalidLLMJSONError("json truncado")
+        return {
+            "ThematicLandscape": thematic_payload(),
+            "RegulatoryIntelligence": regulatory_payload(),
+        }[response_schema["title"]]
+
+    client.generate_json = invalid_strategic_json
+    workflow, _, analysis_repo, _ = make_workflow(client)
+
+    result = workflow.run(documents=docs, bundles=bundles)
+
+    assert result.run.status == AnalysisRunStatus.PUBLISHED
+    strategic = analysis_repo.get_stage(
+        result.run.id, AnalysisStage.STRATEGIC_ASSESSMENT
+    )
+    assert strategic.result_payload == {
+        "importance_assessments": [],
+        "opportunity_assessments": [],
+        "alignment_assessments": [],
+    }
+
+
+def test_empty_strategic_flag_skips_llm_call_and_publishes_without_scores():
+    docs, bundles = fixtures()
+    workflow, _, analysis_repo, client = make_workflow(
+        use_empty_strategic_assessment=True
+    )
+
+    result = workflow.run(documents=docs, bundles=bundles)
+
+    assert result.run.status == AnalysisRunStatus.PUBLISHED
+    assert [call["contract"] for call in client.calls] == [
+        "ThematicLandscape",
+        "RegulatoryIntelligence",
+    ]
+    strategic = analysis_repo.get_stage(
+        result.run.id, AnalysisStage.STRATEGIC_ASSESSMENT
+    )
+    assert strategic.result_payload == {
+        "importance_assessments": [],
+        "opportunity_assessments": [],
+        "alignment_assessments": [],
+    }
 
 
 @pytest.mark.parametrize(

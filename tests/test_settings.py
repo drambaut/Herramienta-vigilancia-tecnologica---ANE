@@ -10,8 +10,9 @@ from app.core.settings import Settings, load_settings, resolve_project_path
 
 
 def test_project_root_points_to_project_directory() -> None:
-    assert settings_module.PROJECT_ROOT.name == "vigilancia-tecnologica---MVP"
+    assert settings_module.PROJECT_ROOT == Path(__file__).resolve().parents[1]
     assert (settings_module.PROJECT_ROOT / "app" / "core" / "settings.py").is_file()
+    assert (settings_module.PROJECT_ROOT / "requirements.txt").is_file()
 
 
 def test_default_values_are_loaded_without_real_environment(
@@ -22,10 +23,15 @@ def test_default_values_are_loaded_without_real_environment(
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_MAX_OUTPUT_TOKENS", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_STORAGE_BUCKET", raising=False)
+    monkeypatch.delenv("SUPABASE_STORAGE_FILE_SIZE_LIMIT_BYTES", raising=False)
+    monkeypatch.delenv("SUPABASE_STORAGE_ALLOWED_MIME_TYPES", raising=False)
 
     settings = load_settings(project_root=tmp_path, env_file=tmp_path / ".env")
 
@@ -35,11 +41,21 @@ def test_default_values_are_loaded_without_real_environment(
     assert settings.output_dir == (tmp_path / "outputs").resolve()
     assert settings.llm_provider == "gemini"
     assert settings.gemini_api_key == ""
-    assert settings.gemini_model == "gemini-2.5-flash"
+    assert settings.gemini_model == "gemini-3.5-flash"
+    assert settings.gemini_max_output_tokens == 65_536
     assert settings.openai_api_key == ""
     assert settings.openai_model == "gpt-4o-mini"
     assert settings.supabase_url == ""
     assert settings.supabase_key == ""
+    assert settings.supabase_service_role_key == ""
+    assert settings.supabase_backend_key == ""
+    assert settings.supabase_storage_bucket == "source-documents"
+    assert settings.storage_file_size_limit_bytes == 52_428_800
+    assert settings.storage_allowed_mime_types == (
+        "application/pdf",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 def test_settings_are_immutable(tmp_path: Path) -> None:
@@ -92,11 +108,55 @@ def test_supabase_variables_are_loaded(tmp_path: Path) -> None:
         environ={
             "SUPABASE_URL": "https://example.supabase.co",
             "SUPABASE_KEY": "test-key",
+            "SUPABASE_SERVICE_ROLE_KEY": "service-key",
+            "SUPABASE_STORAGE_BUCKET": "custom-documents",
+            "SUPABASE_STORAGE_FILE_SIZE_LIMIT_BYTES": "100",
+            "SUPABASE_STORAGE_ALLOWED_MIME_TYPES": "application/pdf,text/csv",
         },
     )
 
     assert settings.supabase_url == "https://example.supabase.co"
     assert settings.supabase_key == "test-key"
+    assert settings.supabase_service_role_key == "service-key"
+    assert settings.supabase_backend_key == "service-key"
+    assert settings.supabase_storage_bucket == "custom-documents"
+    assert settings.storage_file_size_limit_bytes == 100
+    assert settings.storage_allowed_mime_types == ("application/pdf", "text/csv")
+
+
+def test_gemini_max_output_tokens_is_loaded(tmp_path: Path) -> None:
+    settings = load_settings(
+        project_root=tmp_path,
+        env_file=tmp_path / ".env",
+        environ={"GEMINI_MAX_OUTPUT_TOKENS": "32768"},
+    )
+
+    assert settings.gemini_max_output_tokens == 32_768
+
+
+def test_supabase_backend_key_falls_back_to_public_key(tmp_path: Path) -> None:
+    settings = load_settings(
+        project_root=tmp_path,
+        env_file=tmp_path / ".env",
+        environ={
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_KEY": "anon-key",
+        },
+    )
+
+    assert settings.supabase_backend_key == "anon-key"
+
+
+def test_source_document_storage_path_is_canonical(tmp_path: Path) -> None:
+    settings = load_settings(project_root=tmp_path, env_file=tmp_path / ".env", environ={})
+
+    path = settings.source_document_storage_path(
+        source_type="institutional plan",
+        document_id="doc 123",
+        file_name="../PMGE Agenda.xlsx",
+    )
+
+    assert path == "institutional-plan/doc-123/PMGE-Agenda.xlsx"
 
 
 def test_env_file_values_are_loaded_from_isolated_file(

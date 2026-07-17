@@ -50,34 +50,57 @@ class GeminiStructuredClient:
         input_data: LLMInput,
         response_schema: Mapping[str, Any],
     ) -> dict[str, Any]:
+        last_error: json.JSONDecodeError | None = None
+        for attempt, attempt_prompt in enumerate(_retry_prompts(prompt), start=1):
+            response = self._generate_content(
+                prompt=attempt_prompt,
+                input_data=input_data,
+                response_schema=response_schema,
+            )
+            raw_text = getattr(response, "text", None)
+            if not raw_text or not str(raw_text).strip():
+                raise EmptyLLMResponseError("Gemini devolvio una respuesta vacia.")
+
+            try:
+                parsed = json.loads(str(raw_text))
+            except json.JSONDecodeError as exc:
+                last_error = exc
+                if attempt == 1:
+                    continue
+                raise InvalidLLMJSONError(
+                    f"Gemini devolvio JSON invalido: {exc}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise InvalidLLMJSONError(
+                    "Gemini devolvio JSON valido pero no un objeto."
+                )
+            return parsed
+        raise InvalidLLMJSONError(f"Gemini devolvio JSON invalido: {last_error}")
+
+    def _generate_content(
+        self,
+        *,
+        prompt: str,
+        input_data: LLMInput,
+        response_schema: Mapping[str, Any],
+    ) -> Any:
         try:
             from google.genai import types
 
-            response = self._get_client().models.generate_content(
+            return self._get_client().models.generate_content(
                 model=self._settings.gemini_model,
                 contents=self._build_contents(types, prompt, input_data),
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=dict(response_schema),
+                    response_json_schema=_provider_schema(response_schema),
                     temperature=0.1,
+                    max_output_tokens=self._settings.gemini_max_output_tokens,
                 ),
             )
         except MissingConfigurationError:
             raise
         except Exception as exc:
             raise LLMProviderError(f"Error del proveedor Gemini: {exc}") from exc
-
-        raw_text = getattr(response, "text", None)
-        if not raw_text or not str(raw_text).strip():
-            raise EmptyLLMResponseError("Gemini devolvio una respuesta vacia.")
-
-        try:
-            parsed = json.loads(str(raw_text))
-        except json.JSONDecodeError as exc:
-            raise InvalidLLMJSONError(f"Gemini devolvio JSON invalido: {exc}") from exc
-        if not isinstance(parsed, dict):
-            raise InvalidLLMJSONError("Gemini devolvio JSON valido pero no un objeto.")
-        return parsed
 
     def _build_contents(self, types: Any, prompt: str, input_data: LLMInput) -> list[Any]:
         text = self._build_text_part(prompt, input_data)
@@ -103,3 +126,42 @@ class GeminiStructuredClient:
         if input_data.text.strip():
             sections.append(f"CONTENIDO A ANALIZAR:\n{input_data.text}")
         return "\n\n".join(sections)
+
+
+def _retry_prompts(prompt: str) -> tuple[str, str]:
+    compact_retry = (
+        f"{prompt.rstrip()}\n\n"
+        "REINTENTO POR JSON INVALIDO O TRUNCADO:\n"
+        "- Devuelve una version mucho mas corta.\n"
+        "- Prioriza maximo 2 elementos por lista principal.\n"
+        "- Usa frases breves y evita parrafos largos.\n"
+        "- Conserva estrictamente el JSON Schema recibido.\n"
+        "- Devuelve solo JSON valido y completo."
+    )
+    return (prompt, compact_retry)
+
+
+def _provider_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """Quita restricciones que hacen inestable el response_schema de Gemini."""
+    return _strip_provider_constraints(dict(schema))
+
+
+def _strip_provider_constraints(value: Any, *, parent_key: str | None = None) -> Any:
+    unsupported = {
+        "$schema",
+        "description",
+        "maxItems",
+        "maxLength",
+        "minLength",
+        "minimum",
+        "maximum",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _strip_provider_constraints(child, parent_key=key)
+            for key, child in value.items()
+            if parent_key == "properties" or key not in unsupported
+        }
+    if isinstance(value, list):
+        return [_strip_provider_constraints(child) for child in value]
+    return value

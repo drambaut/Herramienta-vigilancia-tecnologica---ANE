@@ -14,6 +14,10 @@ from app.config import (
     PROJECT_ROOT,
     STRUCTURED_DATA_DIR,
     SUPABASE_KEY,
+    SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_STORAGE_ALLOWED_MIME_TYPES,
+    SUPABASE_STORAGE_BUCKET,
+    SUPABASE_STORAGE_FILE_SIZE_LIMIT_BYTES,
     SUPABASE_URL,
 )
 from app.core.settings import load_settings
@@ -55,6 +59,13 @@ def test_legacy_config_constants_match_core_settings() -> None:
     assert LOGS_DIR == settings.logs_dir
     assert SUPABASE_URL == settings.supabase_url
     assert SUPABASE_KEY == settings.supabase_key
+    assert SUPABASE_SERVICE_ROLE_KEY == settings.supabase_service_role_key
+    assert SUPABASE_STORAGE_BUCKET == settings.supabase_storage_bucket
+    assert (
+        SUPABASE_STORAGE_FILE_SIZE_LIMIT_BYTES
+        == settings.storage_file_size_limit_bytes
+    )
+    assert SUPABASE_STORAGE_ALLOWED_MIME_TYPES == settings.storage_allowed_mime_types
 
 
 def test_ensure_legacy_directories_creates_expected_directories(

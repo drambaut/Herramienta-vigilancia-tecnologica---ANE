@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.settings import Settings
+from app.core.settings import (
+    DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
+    DEFAULT_STORAGE_ALLOWED_MIME_TYPES,
+    DEFAULT_STORAGE_BUCKET,
+    DEFAULT_STORAGE_FILE_SIZE_LIMIT_BYTES,
+    Settings,
+)
 from app.documents.models import DocumentChunk
 from app.llm.base import LLMInput
 from app.llm.errors import (
@@ -197,10 +203,15 @@ def settings(api_key: str = "fake-key") -> Settings:
         llm_provider="gemini",
         gemini_api_key=api_key,
         gemini_model="gemini-test",
+        gemini_max_output_tokens=DEFAULT_GEMINI_MAX_OUTPUT_TOKENS,
         openai_api_key="",
         openai_model="",
         supabase_url="",
         supabase_key="",
+        supabase_service_role_key="",
+        supabase_storage_bucket=DEFAULT_STORAGE_BUCKET,
+        storage_file_size_limit_bytes=DEFAULT_STORAGE_FILE_SIZE_LIMIT_BYTES,
+        storage_allowed_mime_types=DEFAULT_STORAGE_ALLOWED_MIME_TYPES,
     )
 
 
@@ -241,11 +252,40 @@ def test_service_accepts_valid_responses(prompt_id: str, payload: dict, contract
     assert result.contract_name == contract
 
 
+def test_service_trims_transversal_payload_to_local_schema_limits() -> None:
+    payload = thematic_payload()
+    payload["corpus_summary"] = "x" * 2000
+    payload["themes"] = payload["themes"] * 6
+    payload["themes"][0]["definition"] = "y" * 1000
+    payload["themes"][0]["subthemes"] = [f"subtema {index}" for index in range(10)]
+
+    result = StructuredExtractionService(client=FakeClient(payload)).extract(
+        prompt_id="thematic_landscape", version="v1", content="texto"
+    )
+
+    assert len(result.payload["corpus_summary"]) == 1200
+    assert len(result.payload["themes"]) == 4
+    assert len(result.payload["themes"][0]["definition"]) == 600
+    assert len(result.payload["themes"][0]["subthemes"]) == 6
+
+
 def test_service_rejects_invalid_response() -> None:
     service = StructuredExtractionService(client=FakeClient(document_payload("Muy alta")))
 
     with pytest.raises(Exception, match="DocumentExtraction.findings\\[0\\].confidence"):
         service.extract(prompt_id="document_extraction", version="v1", content="texto")
+
+
+def test_service_trims_overlong_evidence_quotes_before_contract_validation() -> None:
+    payload = document_payload()
+    payload["evidence"][0]["quote"] = "Texto fuente." + ("x" * 600)
+
+    result = StructuredExtractionService(client=FakeClient(payload)).extract(
+        prompt_id="document_extraction", version="v1", content="texto"
+    )
+
+    assert len(result.payload["evidence"][0]["quote"]) == 500
+    assert result.payload["evidence"][0]["quote"].startswith("Texto fuente.")
 
 
 def test_service_rejects_invalid_transversal_response() -> None:
@@ -280,6 +320,30 @@ def test_pdf_input_keeps_original_bytes_and_mime_type() -> None:
     assert input_data.file_name == "doc.pdf"
     assert input_data.metadata == {"document_id": "doc-1"}
     assert "PDF original" in input_data.text
+
+
+def test_pdf_input_adds_institutional_smoke_limits() -> None:
+    input_data = build_pdf_input(
+        file_name="pmge.pdf",
+        file_bytes=b"%PDF",
+        metadata={"source_type": "institutional_plan", "smoke": "true"},
+    )
+
+    assert "MODO SMOKE TECNICO" in input_data.text
+    assert "maximo 2 proyectos PMGE" in input_data.text
+    assert "8 evidencias" in input_data.text
+
+
+def test_pdf_input_adds_surveillance_smoke_limits() -> None:
+    input_data = build_pdf_input(
+        file_name="reporte.pdf",
+        file_bytes=b"%PDF",
+        metadata={"source_type": "surveillance", "smoke": "true"},
+    )
+
+    assert "maximo 3 hallazgos" in input_data.text
+    assert "5 evidencias" in input_data.text
+    assert "maximo 3 items por campo de lista" in input_data.text
 
 
 def test_excel_input_does_not_send_binary_and_preserves_sheets_rows() -> None:
@@ -321,6 +385,19 @@ def test_excel_input_does_not_send_binary_and_preserves_sheets_rows() -> None:
     assert "ROW_REFERENCE: 5" in input_data.text
     assert "first" in input_data.text
     assert "second" in input_data.text
+
+
+def test_excel_input_adds_policy_smoke_limits() -> None:
+    input_data = build_excel_input(
+        file_name="matriz.xlsx",
+        chunks=[],
+        metadata={"source_type": "policy_matrix", "smoke": "1"},
+    )
+
+    assert "MODO SMOKE TECNICO" in input_data.text
+    assert "maximo 3 politicas" in input_data.text
+    assert "copia literal corta" in input_data.text
+    assert "ROW_REFERENCE" in input_data.text
 
 
 def test_missing_prompt_fails() -> None:
@@ -369,6 +446,31 @@ def test_gemini_malformed_json_is_rejected() -> None:
         client.generate_json(
             prompt="p", input_data=LLMInput(text="c"), response_schema={"type": "object"}
         )
+
+
+def test_gemini_retries_once_with_compact_instruction_after_invalid_json() -> None:
+    calls: list[dict] = []
+
+    def generate_content(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SimpleNamespace(text='{"ok": "truncado')
+        return SimpleNamespace(text='{"ok": true}')
+
+    fake_google = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    client = GeminiStructuredClient(
+        settings=settings(), client_factory=lambda **kwargs: fake_google
+    )
+
+    result = client.generate_json(
+        prompt="Prompt",
+        input_data=LLMInput(text="contenido"),
+        response_schema={"type": "object"},
+    )
+
+    assert result == {"ok": True}
+    assert len(calls) == 2
+    assert "REINTENTO POR JSON INVALIDO" in calls[1]["contents"][0].text
 
 
 def test_gemini_provider_error_is_wrapped() -> None:
@@ -439,6 +541,47 @@ def test_gemini_receives_text_metadata_and_pdf_part() -> None:
     assert "doc.pdf" in parts[0].text
     assert parts[1].inline_data.mime_type == "application/pdf"
     assert parts[1].inline_data.data == b"%PDF bytes"
+    assert captured["config"].response_json_schema == {"type": "object"}
+    assert captured["config"].response_schema is None
+    assert captured["config"].max_output_tokens == DEFAULT_GEMINI_MAX_OUTPUT_TOKENS
+
+
+def test_gemini_strips_provider_unsafe_schema_constraints() -> None:
+    captured: dict = {}
+
+    def generate_content(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(text='{"ok": true}')
+
+    fake_google = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    client = GeminiStructuredClient(
+        settings=settings(), client_factory=lambda **kwargs: fake_google
+    )
+
+    client.generate_json(
+        prompt="Prompt",
+        input_data=LLMInput(text="contenido"),
+        response_schema={
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "description": "schema completo",
+            "properties": {
+                "description": {"type": "string", "maxLength": 10},
+                "items": {
+                    "type": "array",
+                    "maxItems": 2,
+                    "items": {"type": "string", "maxLength": 5},
+                }
+            },
+        },
+    )
+
+    schema = captured["config"].response_json_schema
+    assert "$schema" not in schema
+    assert "description" not in schema
+    assert "description" in schema["properties"]
+    assert "maxItems" not in str(schema)
+    assert "maxLength" not in str(schema)
 
 
 def test_gemini_excel_input_sends_only_text_and_metadata() -> None:
