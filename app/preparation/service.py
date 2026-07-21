@@ -11,10 +11,12 @@ from app.documents.service import DocumentService
 from app.preparation.base import DocumentPreparer
 from app.preparation.errors import (
     DocumentPreparationError,
+    OcrRequiredError,
     PreparationJobNotFoundError,
     UnsupportedDocumentFormatError,
 )
 from app.preparation.excel import ExcelDocumentPreparer
+from app.preparation.ocr import OcrPdfPreparer
 from app.preparation.pdf import PdfDocumentPreparer
 
 
@@ -44,16 +46,30 @@ class DocumentPreparationService:
         job = self._find_preparation_job(document_id)
 
         try:
+            extension = Path(file_name).suffix.lower()
             preparer = self._select_preparer(file_name)
+
             self._document_service.transition_document_status(
                 document_id, DocumentStatus.PREPARING
             )
             self._repository.update_job_status(job.id, JobStatus.RUNNING)
-            chunks = preparer.prepare(
-                document_id=document_id,
-                file_name=file_name,
-                content=content,
-            )
+
+            try:
+                chunks = preparer.prepare(
+                    document_id=document_id,
+                    file_name=file_name,
+                    content=content,
+                )
+            except OcrRequiredError:
+                # Fallback OCR para PDFs sin texto suficiente.
+                if extension != ".pdf":
+                    raise
+                ocr_preparer = OcrPdfPreparer()
+                chunks = ocr_preparer.prepare(
+                    document_id=document_id,
+                    file_name=file_name,
+                    content=content,
+                )
             for chunk in chunks:
                 self._repository.save_chunk(chunk)
             self._repository.update_job_status(job.id, JobStatus.COMPLETED)

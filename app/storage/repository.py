@@ -33,4 +33,10 @@ class SourceDocumentStorage(Protocol):
         """Descarga un archivo original desde Storage."""
 
     def delete_source_document(self, path: str) -> None:
-        """Elimina un archivo original desde Storage."""
+        """Elimina un archivo original desde Storage. Operacion administrativa."""
+
+    def file_exists(self, path: str) -> bool:
+        """Verifica si un archivo ya existe en Storage sin descargarlo."""
+
+    def create_signed_url(self, path: str, expires_in_seconds: int = 3600) -> str:
+        """Genera una URL firmada temporal para descarga privada del archivo."""

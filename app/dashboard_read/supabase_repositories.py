@@ -64,3 +64,68 @@ class SupabaseDashboardResultReadRepository:
             if bundle is not None:
                 bundles.append(bundle)
         return bundles
+
+
+class SupabaseSnapshotListRepository:
+    """Lectura de listado e historial de snapshots."""
+
+    def __init__(
+        self,
+        *,
+        settings: Settings | None = None,
+        client: Any | None = None,
+        client_factory: Callable[[str, str], Any] | None = None,
+    ) -> None:
+        from app.core.settings import load_settings
+        self._settings = settings or load_settings()
+        self._client = client
+        self._client_factory = client_factory
+
+    def get_snapshot_history(self) -> list[dict[str, Any]]:
+        client = self._client_instance()
+        # Traemos todos los snapshots. Idealmente se haria un join con runs
+        # pero para mantenerlo simple consultamos ambos
+        snapshots_data = client.table("corpus_snapshots").select("*").order("created_at", desc=True).execute().data or []
+        runs_data = client.table("analysis_runs").select("*").execute().data or []
+        
+        runs_by_snapshot = {}
+        for run in runs_data:
+            sid = run.get("corpus_snapshot_id")
+            if sid:
+                # Solo guardamos el más reciente/relevante si hay múltiples
+                if sid not in runs_by_snapshot or run.get("status") == "published":
+                    runs_by_snapshot[sid] = run
+
+        history = []
+        for snap in snapshots_data:
+            sid = snap["id"]
+            run = runs_by_snapshot.get(sid)
+            # Para document_count podríamos contar en corpus_snapshot_documents
+            # pero por ahora lo inferimos del dashboard si está publicado o lo dejamos en 0 si no se requiere exacto,
+            # lo ideal es contar
+            doc_count = client.table("corpus_snapshot_documents").select("document_id", count="exact").eq("snapshot_id", sid).execute().count or 0
+            
+            history.append({
+                "snapshot_id": sid,
+                "run_id": run["id"] if run else None,
+                "created_at": snap["created_at"],
+                "published_at": run["published_at"] if run else None,
+                "status": run["status"] if run else "draft",
+                "document_count": doc_count,
+            })
+            
+        return history
+
+    def _client_instance(self):
+        if self._client is not None:
+            return self._client
+        key = self._settings.supabase_backend_key or self._settings.supabase_key
+        if not self._settings.supabase_url or not key:
+            raise ValueError("Falta URL o key de Supabase")
+        factory = self._client_factory or self._default_client_factory
+        self._client = factory(self._settings.supabase_url, key)
+        return self._client
+
+    def _default_client_factory(self, url: str, key: str):
+        from supabase import create_client
+        return create_client(url, key)

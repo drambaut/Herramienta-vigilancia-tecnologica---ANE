@@ -110,6 +110,30 @@ class SupabaseDocumentRepository:
         )
         return [_chunk_from_row(row) for row in rows or []]
 
+    def match_chunks(
+        self,
+        *,
+        query_embedding: list[float],
+        match_threshold: float,
+        match_count: int,
+        document_ids: list[str] | None = None,
+    ) -> list[DocumentChunk]:
+        """Realiza búsqueda semántica de fragmentos usando la función RPC en la base de datos."""
+        params = {
+            "query_embedding": query_embedding,
+            "match_threshold": match_threshold,
+            "match_count": match_count,
+        }
+        if document_ids is not None:
+            params["filter_document_ids"] = document_ids
+        
+        rows = (
+            self._client.rpc("match_document_chunks", params)
+            .execute()
+            .data
+        )
+        return [_chunk_from_row(row) for row in rows or []]
+
     def create_job(self, job: ProcessingJob) -> ProcessingJob:
         self._require_document(job.document_id)
         row = self._insert("processing_jobs", _job_to_row(job))
@@ -249,7 +273,7 @@ def _document_from_row(row: dict[str, Any]) -> Document:
 
 
 def _chunk_to_row(chunk: DocumentChunk) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "id": chunk.id,
         "document_id": chunk.document_id,
         "content": chunk.content,
@@ -260,6 +284,9 @@ def _chunk_to_row(chunk: DocumentChunk) -> dict[str, Any]:
         "content_hash": chunk.content_hash,
         "position": chunk.position,
     }
+    if chunk.embedding is not None:
+        row["embedding"] = chunk.embedding
+    return row
 
 
 def _chunk_from_row(row: dict[str, Any]) -> DocumentChunk:
@@ -273,6 +300,7 @@ def _chunk_from_row(row: dict[str, Any]) -> DocumentChunk:
         row_reference=row.get("row_reference"),
         content_hash=row["content_hash"],
         position=row["position"],
+        embedding=row.get("embedding"),
     )
 
 

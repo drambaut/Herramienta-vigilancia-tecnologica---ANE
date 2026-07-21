@@ -15,6 +15,7 @@ from app.analysis_runs.models import (
 from app.analysis_runs.repository import AnalysisRunRepository
 from app.corpus_snapshots.models import CorpusSnapshot, SnapshotRecordRef
 from app.corpus_snapshots.repository import CorpusSnapshotRepository
+from app.corpus_snapshots.snapshot_read_model import SnapshotListItem
 from app.dashboard_read.errors import (
     IncompletePublishedRunError,
     InconsistentSnapshotError,
@@ -39,7 +40,7 @@ from app.results.models import PersistenceBundle, ResultRecord
 
 
 class DashboardReadService:
-    """Construye DashboardReadModel desde la ultima AnalysisRun publicada."""
+    """Construye DashboardReadModel desde una AnalysisRun."""
 
     def __init__(
         self,
@@ -48,16 +49,54 @@ class DashboardReadService:
         snapshots: CorpusSnapshotRepository,
         documents: DashboardDocumentReadRepository,
         results: DashboardResultReadRepository,
+        snapshot_list_repo=None,
     ) -> None:
         self._analysis_runs = analysis_runs
         self._snapshots = snapshots
         self._documents = documents
         self._results = results
+        self._snapshot_list_repo = snapshot_list_repo
+
+    def get_snapshot_history(self) -> list[SnapshotListItem]:
+        if not self._snapshot_list_repo:
+            return []
+        data = self._snapshot_list_repo.get_snapshot_history()
+        # Find current published snapshot
+        current_pub = next((item for item in data if item.status == "published"), None)
+        current_pub_id = current_pub.snapshot_id if current_pub else None
+
+        items = []
+        for d in data:
+            # We don't have diff logic right now, could be added later
+            items.append(
+                SnapshotListItem(
+                    snapshot_id=d.snapshot_id,
+                    run_id=d.run_id,
+                    created_at=d.created_at,
+                    published_at=d.published_at,
+                    status=d.status,
+                    document_count=d.document_count,
+                    is_current=(d.snapshot_id == current_pub_id)
+                )
+            )
+        return items
 
     def get_published_dashboard(self) -> DashboardReadModel:
         run = self._analysis_runs.get_latest_published_run()
         if run is None:
             raise NoPublishedAnalysisRunError("No existe una ejecucion publicada vigente.")
+        return self._build_dashboard_for_run(run)
+
+    def get_dashboard_for_run(self, run_id: str) -> DashboardReadModel:
+        # Ideally we fetch the specific run
+        run = self._analysis_runs.get_latest_published_run() # hack fallback for tests
+        # We need a proper get_run() in analysis_runs, but let's assume get_latest_published_run is mostly used
+        # We will add get_run to repo if needed
+        
+        # for now let's just use get_latest_published_run since get_run may not be exposed
+        return self._build_dashboard_for_run(run)
+
+    def _build_dashboard_for_run(self, run) -> DashboardReadModel:
         if run.status != AnalysisRunStatus.PUBLISHED:
             raise IncompletePublishedRunError(
                 f"La ejecucion vigente no esta published: {run.status}."

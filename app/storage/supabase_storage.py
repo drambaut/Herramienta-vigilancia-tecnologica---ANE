@@ -78,12 +78,59 @@ class SupabaseSourceDocumentStorage:
         raise StorageError(f"Supabase Storage devolvio un contenido inesperado para {path}.")
 
     def delete_source_document(self, path: str) -> None:
+        """Elimina un archivo original. Operacion administrativa exclusiva del backend."""
         try:
             self._bucket().remove([path])
         except StorageError:
             raise
         except Exception as exc:
             raise StorageError(f"No fue posible eliminar {path} de Supabase Storage.") from exc
+
+    def file_exists(self, path: str) -> bool:
+        """Verifica si un archivo ya existe en Storage sin descargarlo.
+
+        Usa list() acotado a la ruta del archivo para evitar descargas innecesarias.
+        Devuelve False ante cualquier error de conectividad o permisos.
+        """
+        try:
+            # Supabase list() admite prefix y limit; buscamos exactamente la ruta
+            # separando en folder + filename para usar el prefijo correcto.
+            if "/" in path:
+                prefix = path.rsplit("/", 1)[0] + "/"
+                filename = path.rsplit("/", 1)[1]
+            else:
+                prefix = ""
+                filename = path
+            results = self._bucket().list(
+                path=prefix,
+                options={"limit": 1, "search": filename},
+            )
+            if isinstance(results, list):
+                return any(item.get("name") == filename for item in results)
+            return False
+        except Exception:
+            return False
+
+    def create_signed_url(self, path: str, expires_in_seconds: int = 3600) -> str:
+        """Genera una URL firmada temporal para descarga privada.
+
+        La URL expira tras `expires_in_seconds` segundos (máximo depende de RLS).
+        No expone la service role key al cliente; la URL es el único token temporal.
+        """
+        try:
+            result = self._bucket().create_signed_url(path, expires_in_seconds)
+            # La respuesta de supabase-py puede ser dict o objeto con atributo
+            if isinstance(result, dict):
+                url = result.get("signedUrl") or result.get("signedURL") or result.get("signed_url")
+            else:
+                url = getattr(result, "signed_url", None) or getattr(result, "signedUrl", None)
+            if not url:
+                raise StorageError(f"Supabase no devolvio URL firmada para {path}.")
+            return str(url)
+        except StorageError:
+            raise
+        except Exception as exc:
+            raise StorageError(f"No fue posible crear URL firmada para {path}.") from exc
 
     def _bucket(self):
         return self._client_instance().storage.from_(

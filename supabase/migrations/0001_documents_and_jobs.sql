@@ -10,7 +10,10 @@ create extension if not exists pgcrypto;
 create type source_type as enum (
     'surveillance',
     'institutional_plan',
-    'policy_matrix'
+    'policy_matrix',
+    'pmge_projects',
+    'technology_agenda',
+    'support_document'
 );
 
 create type document_status as enum (

@@ -11,6 +11,9 @@ class SourceType(str, Enum):
     SURVEILLANCE = "surveillance"
     INSTITUTIONAL_PLAN = "institutional_plan"
     POLICY_MATRIX = "policy_matrix"
+    PMGE_PROJECTS = "pmge_projects"
+    TECHNOLOGY_AGENDA = "technology_agenda"
+    SUPPORT_DOCUMENT = "support_document"
 
 
 class DocumentStatus(str, Enum):
@@ -67,6 +70,7 @@ class DocumentChunk:
     row_reference: str | None
     content_hash: str
     position: int
+    embedding: list[float] | None = None
 
 
 @dataclass(frozen=True)

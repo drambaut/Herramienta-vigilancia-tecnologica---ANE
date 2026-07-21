@@ -127,6 +127,20 @@ class GeminiStructuredClient:
             sections.append(f"CONTENIDO A ANALIZAR:\n{input_data.text}")
         return "\n\n".join(sections)
 
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Genera embeddings para una lista de textos usando text-embedding-004."""
+        if not texts:
+            return []
+        try:
+            response = self._get_client().models.embed_content(
+                model="text-embedding-004",
+                contents=texts,
+            )
+            embeddings = getattr(response, "embeddings", [])
+            return [list(e.values) for e in embeddings]
+        except Exception as exc:
+            raise LLMProviderError(f"Error generando embeddings: {exc}") from exc
+
 
 def _retry_prompts(prompt: str) -> tuple[str, str]:
     compact_retry = (

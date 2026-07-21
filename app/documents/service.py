@@ -28,6 +28,10 @@ ANALYSIS_JOB_BY_SOURCE_TYPE: dict[SourceType, JobType] = {
     SourceType.SURVEILLANCE: JobType.DOCUMENT_ANALYSIS,
     SourceType.INSTITUTIONAL_PLAN: JobType.INSTITUTIONAL_PLAN_ANALYSIS,
     SourceType.POLICY_MATRIX: JobType.POLICY_MATRIX_ANALYSIS,
+    # Los nuevos tipos de fuente delegan al job más cercano por semántica
+    SourceType.PMGE_PROJECTS: JobType.INSTITUTIONAL_PLAN_ANALYSIS,
+    SourceType.TECHNOLOGY_AGENDA: JobType.INSTITUTIONAL_PLAN_ANALYSIS,
+    SourceType.SUPPORT_DOCUMENT: JobType.DOCUMENT_ANALYSIS,
 }
 
 VALID_STATUS_TRANSITIONS: dict[DocumentStatus, set[DocumentStatus]] = {
