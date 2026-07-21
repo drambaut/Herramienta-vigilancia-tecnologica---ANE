@@ -2,21 +2,25 @@
 from pathlib import Path
 import inspect
 import pandas as pd
+import pytest
 from streamlit.testing.v1 import AppTest
 from app.dashboard import (
     COLOR_ACCENT, COLOR_BLUE, COLOR_GRAY, COLOR_GREEN, COLOR_ORANGE, COLOR_PURPLE,
+    DASHBOARD_DATA_SOURCE_AUTO, DASHBOARD_DATA_SOURCE_DEMO, DASHBOARD_DATA_SOURCE_SUPABASE,
     DEMO_DATA_DIR, apply_global_filters, build_cross_matrix, build_matrix,
-    load_demo_data, parse_list, render_badge, render_metric_card,
+    dashboard_data_source, load_demo_data, load_published_dashboard_model,
+    parse_list, public_upload_metadata, render_badge, render_metric_card,
     render_relevance_methodology, render_topic_corpus_treemap,
     render_html_heatmap, render_signals_table, short_topic_label, shorten_label,
     render_raw_data_table, render_topic_relevance_bar,
     filter_regulatory_rows, render_regulatory_map_table,
     render_regulatory_sunburst, render_regulatory_trend_cards,
-    truncate_label, _render_topic_relevance,
+    truncate_label, upload_content_type, _render_topic_relevance,
     _build_filtered_signals, _filter_raw_records, _priority_label,
     _render_crosses, _render_raw_data, _render_signals,
     _render_topic_volume, _topic_summary,
 )
+from app.dashboard_read.errors import NoPublishedAnalysisRunError
 
 MINIMUM_COLUMNS = {
     "document_id", "file_name", "source_folder", "tema_estrategico", "linea_pmge",
@@ -38,6 +42,80 @@ def test_demo_data_exists_and_records_have_minimum_columns() -> None:
 
 def test_load_demo_data_reads_records() -> None:
     assert not load_demo_data()["dashboard_records"].empty
+
+def test_dashboard_data_source_auto_uses_supabase_when_configured_and_demo_otherwise() -> None:
+    assert dashboard_data_source({}) == DASHBOARD_DATA_SOURCE_DEMO
+    assert dashboard_data_source({"DASHBOARD_DATA_SOURCE": DASHBOARD_DATA_SOURCE_AUTO}) == (
+        DASHBOARD_DATA_SOURCE_DEMO
+    )
+    assert dashboard_data_source(
+        {
+            "DASHBOARD_DATA_SOURCE": DASHBOARD_DATA_SOURCE_AUTO,
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_KEY": "anon-key",
+        }
+    ) == DASHBOARD_DATA_SOURCE_SUPABASE
+    assert dashboard_data_source({"DASHBOARD_DATA_SOURCE": " Supabase "}) == (
+        DASHBOARD_DATA_SOURCE_SUPABASE
+    )
+
+def test_dashboard_data_source_reads_real_os_environ_when_no_override_given(monkeypatch) -> None:
+    """Regresion: sin override, debia leer os.environ real, no caer siempre a demo."""
+    monkeypatch.setenv("DASHBOARD_DATA_SOURCE", DASHBOARD_DATA_SOURCE_AUTO)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+    assert dashboard_data_source() == DASHBOARD_DATA_SOURCE_SUPABASE
+    assert dashboard_data_source({"DASHBOARD_DATA_SOURCE": "desconocido"}) == (
+        DASHBOARD_DATA_SOURCE_DEMO
+    )
+
+def test_supabase_dashboard_loader_uses_dashboard_read_service() -> None:
+    class FakeService:
+        def __init__(self) -> None:
+            self.called = False
+
+        def get_published_dashboard(self):
+            self.called = True
+            return "model"
+
+    service = FakeService()
+
+    assert load_published_dashboard_model(service) == "model"
+    assert service.called is True
+
+def test_supabase_dashboard_empty_state_is_supported_without_gemini_or_original_files() -> None:
+    class EmptyService:
+        def get_published_dashboard(self):
+            raise NoPublishedAnalysisRunError("sin publicacion")
+
+    with pytest.raises(NoPublishedAnalysisRunError):
+        load_published_dashboard_model(EmptyService())
+
+    source = Path(__file__).parents[1].joinpath("app", "dashboard.py").read_text(
+        encoding="utf-8"
+    )
+    assert "google.genai" not in source
+    assert "download_source_document" not in source
+    assert "source_document_storage_path" not in source
+
+def test_supabase_dashboard_exposes_public_upload_without_reading_originals() -> None:
+    source = Path(__file__).parents[1].joinpath("app", "dashboard.py").read_text(
+        encoding="utf-8"
+    )
+    assert "st.file_uploader" in source
+    assert "build_manual_processing_workflow" in source
+    assert "download_source_document" not in source
+
+def test_public_upload_helpers_set_content_type_and_metadata() -> None:
+    assert upload_content_type("doc.pdf") == "application/pdf"
+    assert upload_content_type("book.xls") == "application/vnd.ms-excel"
+    assert upload_content_type("book.xlsx").endswith("spreadsheetml.sheet")
+    assert public_upload_metadata(" Cullen ", smoke=True) == {
+        "origin": "dashboard_upload",
+        "provider": "Cullen",
+        "smoke": "true",
+    }
+    assert public_upload_metadata("", smoke=False)["provider"] == "dashboard"
 
 def test_parse_list_supports_json_and_python_literals() -> None:
     assert parse_list('["5G", "6G"]') == ["5G", "6G"]
@@ -171,13 +249,16 @@ def test_topic_relevance_bar_is_compact_sorted_and_uses_zero_to_ten_scale() -> N
     assert figure.layout.height == 330
     assert "Documentos" in figure.data[0].hovertemplate
 
-def test_dashboard_renders_visual_structure_without_errors() -> None:
+def test_dashboard_renders_visual_structure_without_errors(monkeypatch) -> None:
+    """Fuerza modo demo: no debe depender de si la maquina tiene Supabase configurado."""
+    monkeypatch.setenv("DASHBOARD_DATA_SOURCE", DASHBOARD_DATA_SOURCE_DEMO)
     dashboard_path = Path(__file__).parents[1] / "app" / "dashboard.py"
     app = AppTest.from_file(str(dashboard_path), default_timeout=120).run()
     assert not app.exception
     assert [tab.label for tab in app.tabs] == [
-        "Panorama estratégico", "Inteligencia regulatoria", "Mapa temático regulatorio",
-        "Tendencias regulatorias explicadas", "Señales emergentes y oportunidades",
+        "Carga de documentos", "Panorama estratégico", "Señales regulatorias",
+        "Inteligencia regulatoria", "Mapa temático regulatorio",
+        "Tendencias regulatorias explicadas",
         "Cruces analíticos", "Alineación estratégica",
         "Vigilancia documental × Matriz de políticas", "PMGE / Agenda × Matriz de políticas",
         "Base procesada",
