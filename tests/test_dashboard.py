@@ -58,6 +58,13 @@ def test_dashboard_data_source_auto_uses_supabase_when_configured_and_demo_other
     assert dashboard_data_source({"DASHBOARD_DATA_SOURCE": " Supabase "}) == (
         DASHBOARD_DATA_SOURCE_SUPABASE
     )
+
+def test_dashboard_data_source_reads_real_os_environ_when_no_override_given(monkeypatch) -> None:
+    """Regresion: sin override, debia leer os.environ real, no caer siempre a demo."""
+    monkeypatch.setenv("DASHBOARD_DATA_SOURCE", DASHBOARD_DATA_SOURCE_AUTO)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+    assert dashboard_data_source() == DASHBOARD_DATA_SOURCE_SUPABASE
     assert dashboard_data_source({"DASHBOARD_DATA_SOURCE": "desconocido"}) == (
         DASHBOARD_DATA_SOURCE_DEMO
     )
@@ -242,13 +249,16 @@ def test_topic_relevance_bar_is_compact_sorted_and_uses_zero_to_ten_scale() -> N
     assert figure.layout.height == 330
     assert "Documentos" in figure.data[0].hovertemplate
 
-def test_dashboard_renders_visual_structure_without_errors() -> None:
+def test_dashboard_renders_visual_structure_without_errors(monkeypatch) -> None:
+    """Fuerza modo demo: no debe depender de si la maquina tiene Supabase configurado."""
+    monkeypatch.setenv("DASHBOARD_DATA_SOURCE", DASHBOARD_DATA_SOURCE_DEMO)
     dashboard_path = Path(__file__).parents[1] / "app" / "dashboard.py"
     app = AppTest.from_file(str(dashboard_path), default_timeout=120).run()
     assert not app.exception
     assert [tab.label for tab in app.tabs] == [
-        "Panorama estratégico", "Inteligencia regulatoria", "Mapa temático regulatorio",
-        "Tendencias regulatorias explicadas", "Señales emergentes y oportunidades",
+        "Carga de documentos", "Panorama estratégico", "Señales regulatorias",
+        "Inteligencia regulatoria", "Mapa temático regulatorio",
+        "Tendencias regulatorias explicadas",
         "Cruces analíticos", "Alineación estratégica",
         "Vigilancia documental × Matriz de políticas", "PMGE / Agenda × Matriz de políticas",
         "Base procesada",

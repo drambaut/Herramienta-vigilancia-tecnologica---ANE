@@ -611,3 +611,44 @@ def test_gemini_excel_input_sends_only_text_and_metadata() -> None:
     assert len(parts) == 1
     assert "ROW_REFERENCE: 2" in parts[0].text
     assert "kind" in parts[0].text
+
+
+def test_normalize_provider_payload_drops_empty_optional_field_violating_min_length() -> None:
+    """Regresion: Gemini a veces manda un campo opcional como '' en vez de omitirlo.
+
+    theme_id no es requerido en RegulatoryIntelligenceItem pero exige minLength=1
+    cuando esta presente. Si se deja la cadena vacia, la validacion del contrato
+    falla y tumba todo el analisis transversal aunque el resto del payload sea
+    valido. Debe descartarse el campo, no el registro completo.
+    """
+    from app.llm.service import _normalize_provider_payload
+
+    schema = {
+        "type": "object",
+        "required": ["temporary_id"],
+        "properties": {
+            "temporary_id": {"type": "string", "minLength": 1},
+            "theme_id": {"type": "string", "minLength": 1},
+        },
+    }
+    payload = {"temporary_id": "item-1", "theme_id": ""}
+
+    normalized = _normalize_provider_payload(payload, schema)
+
+    assert normalized == {"temporary_id": "item-1"}
+
+
+def test_normalize_provider_payload_keeps_required_empty_field_so_validation_still_fails() -> None:
+    """Un campo requerido vacio si debe seguir fallando: es una senal real de error."""
+    from app.llm.service import _normalize_provider_payload
+
+    schema = {
+        "type": "object",
+        "required": ["temporary_id"],
+        "properties": {"temporary_id": {"type": "string", "minLength": 1}},
+    }
+    payload = {"temporary_id": ""}
+
+    normalized = _normalize_provider_payload(payload, schema)
+
+    assert normalized == {"temporary_id": ""}

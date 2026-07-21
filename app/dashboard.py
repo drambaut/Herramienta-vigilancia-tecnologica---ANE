@@ -78,15 +78,18 @@ DASHBOARD_DATA_SOURCE_SUPABASE = "supabase"
 _DOC_ALIGN_RENDER_COUNTER = itertools.count()
 _PMGE_ALIGN_RENDER_COUNTER = itertools.count()
 _ALIGNMENT_RANKING_RENDER_COUNTER = itertools.count()
+_SIGNALS_RENDER_COUNTER = itertools.count()
 
 PUBLIC_UPLOAD_TYPES = ("pdf", "xls", "xlsx")
+# Solo se ofrecen los tipos de fuente con prompt de analisis implementado
+# (ver PROMPT_BY_SOURCE_TYPE en app/workflows/document_analysis.py). PMGE_PROJECTS,
+# TECHNOLOGY_AGENDA y SUPPORT_DOCUMENT existen en el modelo/BD pero no tienen
+# contrato de extraccion propio todavia: ofrecerlos aqui llevaria a un fallo en
+# la etapa de analisis para cualquier documento cargado con esos tipos.
 PUBLIC_UPLOAD_SOURCE_LABELS = {
     SourceType.SURVEILLANCE.value: "Vigilancia tecnológica",
     SourceType.INSTITUTIONAL_PLAN.value: "Documento PMGE",
     SourceType.POLICY_MATRIX.value: "Matriz de políticas públicas",
-    SourceType.PMGE_PROJECTS.value: "Proyectos PMGE",
-    SourceType.TECHNOLOGY_AGENDA.value: "Agenda tecnológica",
-    SourceType.SUPPORT_DOCUMENT.value: "Otros documentos de apoyo",
 }
 
 GLOBAL_CSS = f"""
@@ -552,12 +555,11 @@ def dashboard_data_source(environ: dict[str, str] | None = None) -> str:
     source = source_env.get(DASHBOARD_DATA_SOURCE_ENV, DASHBOARD_DATA_SOURCE_AUTO)
     normalized = source.strip().lower() or DASHBOARD_DATA_SOURCE_AUTO
     if normalized == DASHBOARD_DATA_SOURCE_AUTO:
-        if environ is not None:
-            has_explicit_supabase_config = bool(
-                source_env.get("SUPABASE_URL") or source_env.get("SUPABASE_KEY")
-            )
-            if has_explicit_supabase_config:
-                return DASHBOARD_DATA_SOURCE_SUPABASE
+        has_explicit_supabase_config = bool(
+            source_env.get("SUPABASE_URL") or source_env.get("SUPABASE_KEY")
+        )
+        if has_explicit_supabase_config:
+            return DASHBOARD_DATA_SOURCE_SUPABASE
         return DASHBOARD_DATA_SOURCE_DEMO
     if normalized not in {DASHBOARD_DATA_SOURCE_DEMO, DASHBOARD_DATA_SOURCE_SUPABASE}:
         return DASHBOARD_DATA_SOURCE_DEMO
@@ -605,25 +607,21 @@ def public_upload_metadata(provider: str, *, smoke: bool) -> dict[str, str]:
 def _render_supabase_document_upload() -> None:
     from run_manual_processing import build_manual_processing_workflow
     from app.documents.models import SourceType
-    import subprocess
-    import sys
-    from pathlib import Path
-    import os
-    import html
 
     # --- CSS for the upload section ---
     st.markdown("""
     <style>
     .upload-header {
-        background: #1F2937;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 1.5rem 2rem;
         margin-bottom: 1.5rem;
-        color: white !important;
-        border-left: 4px solid #3B82F6;
+        color: var(--text) !important;
+        border-left: 4px solid var(--accent);
     }
-    .upload-header h2 { color: white !important; margin: 0 0 .3rem !important; font-size: 1.15rem !important; font-weight: 600; }
-    .upload-header p { color: rgba(255,255,255,.80) !important; margin: 0 !important; font-size: .85rem !important; }
+    .upload-header h2 { color: var(--text) !important; margin: 0 0 .3rem !important; font-size: 1.15rem !important; font-weight: 600; }
+    .upload-header p { color: var(--muted) !important; margin: 0 !important; font-size: .85rem !important; }
     .step-container {
         border: 1px solid var(--border);
         border-radius: 8px;
@@ -725,61 +723,102 @@ def _render_supabase_document_upload() -> None:
                 st.success("Documentos procesados exitosamente.")
 
         if run_process:
+            from app.core.settings import load_settings
+            from app.documents.models import DocumentStatus
+            from run_manual_processing import find_existing_document, reset_failed_duplicate
+
             workflow = build_manual_processing_workflow()
+            settings = load_settings()
             metadata = public_upload_metadata(provider, smoke=False)
-            
+
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
+
             success_count = 0
+            already_processed_count = 0
             for i, f in enumerate(uploaded_files):
                 status_text.text(f"Procesando {f.name} ({i+1}/{len(uploaded_files)})...")
+                file_bytes = f.getvalue()
+                source_type = SourceType(source_type_value)
                 try:
-                    result = workflow.run(
-                        file_name=f.name,
-                        file_bytes=f.getvalue(),
-                        source_type=SourceType(source_type_value),
-                        metadata=metadata,
-                        content_type=upload_content_type(f.name),
-                    )
+                    try:
+                        result = workflow.run(
+                            file_name=f.name,
+                            file_bytes=file_bytes,
+                            source_type=source_type,
+                            metadata=metadata,
+                            content_type=upload_content_type(f.name),
+                        )
+                    except ManualDocumentProcessingWorkflowError as exc:
+                        if exc.stage != "upload" or "duplicado" not in str(exc.original_error).casefold():
+                            raise
+                        # El archivo ya existe (mismo contenido). Revisamos su
+                        # estado real para decidir el mensaje correcto.
+                        existing = find_existing_document(file_bytes=file_bytes, settings=settings)
+                        if existing is not None and existing.status == DocumentStatus.PROCESSED:
+                            already_processed_count += 1
+                            st.info(f"ℹ️ {f.name}: ya estaba analizado anteriormente, no hace falta subirlo de nuevo.")
+                            continue
+                        if existing is None or existing.status != DocumentStatus.FAILED:
+                            st.warning(
+                                f"⏳ {f.name}: ya se está procesando (o quedó a medias en otro intento). "
+                                "Espera un momento y vuelve a intentar."
+                            )
+                            continue
+                        reset_document = reset_failed_duplicate(
+                            file_name=f.name, file_bytes=file_bytes, source_type=source_type, settings=settings,
+                        )
+                        if reset_document is None:
+                            raise
+                        result = workflow.run(
+                            file_name=f.name,
+                            file_bytes=file_bytes,
+                            source_type=source_type,
+                            metadata=metadata,
+                            content_type=upload_content_type(f.name),
+                            reuse_uploaded_duplicate=True,
+                        )
+                        st.caption(f"↻ {f.name}: tuvo un problema antes; se reintentó y funcionó.")
                     success_count += 1
+                    st.caption(f"✓ {f.name}: procesado correctamente (ID: {result.document.id}).")
+                except ManualDocumentProcessingWorkflowError as exc:
+                    st.error(f"❌ {f.name}: no se pudo procesar. Intenta de nuevo en un momento.")
+                    with st.expander("Detalle técnico"):
+                        st.caption(f"Etapa: {exc.stage} — {exc.original_error}")
                 except Exception as exc:
-                    st.error(f"Error procesando {f.name}: {str(exc)}")
+                    st.error(f"❌ {f.name}: ocurrió un problema inesperado al procesarlo.")
+                    with st.expander("Detalle técnico"):
+                        st.caption(str(exc))
                 progress_bar.progress((i + 1) / len(uploaded_files))
-            
-            if success_count > 0:
-                st.success(f"{success_count} documentos procesados y almacenados en Supabase.")
-                st.session_state.processed_supabase_files = True
-            
-    if st.session_state.processed_supabase_files:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(f"""
-        <div class="step-container">
-            <div class="step-header">
-                <div class="step-number ready">4</div>
-                <span class="step-title">Paso 4: Generar y publicar Snapshot</span>
-            </div>
-            <div class="step-desc">Construye los cruces, tablas y visualizaciones creando un nuevo Snapshot en Supabase.</div>
-        </div>
-        """, unsafe_allow_html=True)
 
-        if st.button("Generar Snapshot (Transversal)", type="primary"):
-            with st.spinner("Construyendo Snapshot en Supabase..."):
+            if success_count > 0:
+                summary = f"{success_count} documento(s) nuevo(s) procesados y almacenados en Supabase."
+                if already_processed_count > 0:
+                    summary += f" {already_processed_count} ya estaban analizados antes."
+                st.session_state.processed_supabase_files = True
                 try:
-                    project_root = str(Path(__file__).parent.parent)
-                    env = os.environ.copy()
-                    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-                    result = subprocess.run(
-                        [sys.executable, str(Path(__file__).parent.parent / "run_supabase_transversal.py")],
-                        capture_output=True, text=True, cwd=project_root, env=env, check=True,
+                    with st.spinner("Actualizando el panorama publicado con los documentos nuevos..."):
+                        from run_supabase_transversal import build_supabase_transversal_workflow
+                        transversal_workflow = build_supabase_transversal_workflow(
+                            settings,
+                            max_records_by_type={
+                                "documents": 6, "document_analysis": 6, "findings": 10,
+                                "evidence": 12, "initiatives": 4, "deliverables": 6,
+                                "policies": 4, "policy_activities": 6, "policy_commitments": 6,
+                            },
+                        )
+                        transversal_workflow.run(
+                            metadata={"trigger": "dashboard_upload"}, auto_publish=True
+                        )
+                    st.cache_data.clear()
+                    st.success(f"{summary} El panorama publicado ya refleja estos documentos.")
+                except Exception as exc:
+                    st.warning(
+                        f"{summary} Los documentos quedaron guardados, pero no se pudo actualizar "
+                        f"el panorama publicado automáticamente: {exc}"
                     )
-                    st.success("Snapshot publicado exitosamente. El Dashboard ha sido actualizado.")
-                    with st.expander("Ver registro de ejecución", expanded=False):
-                        st.code(result.stdout)
-                except subprocess.CalledProcessError as e:
-                    st.error("Error al generar el Snapshot transversal.")
-                    with st.expander("Detalles del error", expanded=True):
-                        st.code(e.stderr)
+            elif already_processed_count > 0:
+                st.info("Todos los documentos seleccionados ya estaban analizados; no hay nada nuevo que agregar.")
 
 def _render_document_management_tab(service: DashboardReadService, model: DashboardReadModel) -> None:
     st.markdown("## Gestión documental")
@@ -800,61 +839,82 @@ def _render_document_management_tab(service: DashboardReadService, model: Dashbo
             key="supabase_multi_source_type",
         )
         if st.button("Subir documentos", disabled=not uploaded_files, key="supabase_multi_submit"):
+            from app.core.settings import load_settings
+            from app.documents.models import DocumentStatus
             from app.workflows.manual_processing import ManualDocumentProcessingWorkflowError
+            from run_manual_processing import find_existing_document, reset_failed_duplicate
+
             workflow = build_manual_processing_workflow()
+            settings = load_settings()
             for uf in uploaded_files:
                 file_name = uf.name
                 extension = Path(file_name).suffix.lower().lstrip(".")
                 if extension not in PUBLIC_UPLOAD_TYPES:
                     st.error(f"Formato no soportado para {file_name}. Usa PDF, XLS o XLSX.")
                     continue
+                file_bytes = uf.getvalue()
+                source_type = SourceType(source_type_value)
                 try:
-                    with st.spinner(f"Procesando {file_name}..."):
-                        result = workflow.run(
-                            file_name=file_name,
-                            file_bytes=uf.getvalue(),
-                            source_type=SourceType(source_type_value),
-                            metadata=public_upload_metadata("dashboard", smoke=False),
-                            content_type=upload_content_type(file_name),
+                    try:
+                        with st.spinner(f"Procesando {file_name}..."):
+                            result = workflow.run(
+                                file_name=file_name,
+                                file_bytes=file_bytes,
+                                source_type=source_type,
+                                metadata=public_upload_metadata("dashboard", smoke=False),
+                                content_type=upload_content_type(file_name),
+                            )
+                    except ManualDocumentProcessingWorkflowError as exc:
+                        if exc.stage != "upload" or "duplicado" not in str(exc.original_error).casefold():
+                            raise
+                        existing = find_existing_document(file_bytes=file_bytes, settings=settings)
+                        if existing is not None and existing.status == DocumentStatus.PROCESSED:
+                            st.info(f"ℹ️ {file_name}: ya estaba analizado anteriormente, no hace falta subirlo de nuevo.")
+                            continue
+                        if existing is None or existing.status != DocumentStatus.FAILED:
+                            st.warning(
+                                f"⏳ {file_name}: ya se está procesando (o quedó a medias en otro intento). "
+                                "Espera un momento y vuelve a intentar."
+                            )
+                            continue
+                        reset_document = reset_failed_duplicate(
+                            file_name=file_name, file_bytes=file_bytes, source_type=source_type, settings=settings,
                         )
+                        if reset_document is None:
+                            raise
+                        with st.spinner(f"Reintentando {file_name}..."):
+                            result = workflow.run(
+                                file_name=file_name,
+                                file_bytes=file_bytes,
+                                source_type=source_type,
+                                metadata=public_upload_metadata("dashboard", smoke=False),
+                                content_type=upload_content_type(file_name),
+                                reuse_uploaded_duplicate=True,
+                            )
+                        st.caption(f"↻ {file_name}: tuvo un problema antes; se reintentó y funcionó.")
                     st.success(f"✓ {file_name} procesado (ID: {result.document.id})")
                 except ManualDocumentProcessingWorkflowError as exc:
-                    st.error(f"Error procesando {file_name} en etapa {exc.stage}.")
-                    st.caption(str(exc.original_error))
+                    st.error(f"❌ {file_name}: no se pudo procesar. Intenta de nuevo en un momento.")
+                    with st.expander("Detalle técnico"):
+                        st.caption(f"Etapa: {exc.stage} — {exc.original_error}")
                 except Exception as exc:
-                    st.error(f"Error procesando {file_name}.")
-                    st.caption(str(exc))
+                    st.error(f"❌ {file_name}: ocurrió un problema inesperado al procesarlo.")
+                    with st.expander("Detalle técnico"):
+                        st.caption(str(exc))
             st.info("Para actualizar el dashboard, publica un nuevo snapshot transversal desde el backend.")
 
     st.markdown("### Documentos del snapshot actual")
     if not model.documents:
         st.info("No hay documentos publicados.")
         return
-        
-    from app.storage.supabase_storage import SupabaseSourceDocumentStorage
-    from app.core.settings import load_settings
-    settings = load_settings()
-    storage = SupabaseSourceDocumentStorage(settings=settings)
-    
+
     rows = []
     for doc in model.documents:
-        # Evitar dependencia del método que construye rutas canónicas de Storage
-        # cuando el dashboard se renderiza sin un read-model válido.
-        try:
-            # Nota: no referenciar internamente el helper que forma rutas canónicas,
-            # para mantener compatibilidad con el comportamiento esperado en tests.
-            path = None
-        except Exception:
-            path = None
-
-        try:
-            if path:
-                url = storage.create_signed_url(path, expires_in_seconds=3600)
-                download_link = f'<a href="{url}" target="_blank">Descargar original</a>'
-            else:
-                download_link = "No disponible"
-        except Exception:
-            download_link = "No disponible"
+        # Descarga de originales deshabilitada a proposito: el dashboard publico
+        # no debe exponer signed URLs de documentos de terceros con licencia
+        # restringida (Cullen International, GSMA, Omdia, etc.). Fuera de alcance
+        # por decision de seguridad hasta definir control de acceso por perfil.
+        download_link = "No disponible"
 
         rows.append({
             "Archivo": doc.file_name,
@@ -1006,19 +1066,86 @@ def render_supabase_dashboard(model: DashboardReadModel, service: DashboardReadS
             "No hay cruces con Agenda Tecnológica publicados.",
         )
     with tabs[8]:
-        st.markdown("### Evidencias")
-        _render_read_model_table(
-            [
-                {
-                    "Doc ID": shorten_label(item.document_id, 13),
-                    "Cita": shorten_label(item.quote, 80),
-                    "Sección": item.section_title or "—",
-                    "Pág": item.page_number or "—",
-                }
-                for item in model.evidence
-            ],
-            "No hay evidencias publicadas.",
+        _render_processed_documents_base(model)
+
+
+def _render_processed_documents_base(model: DashboardReadModel) -> None:
+    """Lista completa de documentos del snapshot publicado, con filtros reales."""
+    st.markdown(
+        '<div class="raw-section-title"><h3>Base procesada</h3>'
+        '<span class="raw-section-pill">CONSULTA / RESPALDO</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Documentos incluidos en el snapshot publicado vigente.")
+    if not model.documents:
+        st.info("No hay documentos publicados.")
+        return
+
+    evidence_counts: dict[str, int] = {}
+    for item in model.evidence:
+        evidence_counts[item.document_id] = evidence_counts.get(item.document_id, 0) + 1
+
+    frame = pd.DataFrame(
+        [
+            {
+                "file_name": doc.file_name,
+                "source_type": PUBLIC_UPLOAD_SOURCE_LABELS.get(doc.source_type, doc.source_type),
+                "file_type": doc.file_type.upper(),
+                "document_date": str(doc.document_date) if doc.document_date else "—",
+                "status": doc.status,
+                "evidence_count": evidence_counts.get(doc.id, 0),
+            }
+            for doc in model.documents
+        ]
+    )
+
+    search_column, source_column = st.columns([3, 1], gap="medium")
+    with search_column:
+        query = st.text_input(
+            "Buscar",
+            placeholder="Buscar por nombre de archivo...",
+            label_visibility="collapsed",
+            key="processed_base_search",
         )
+    with source_column:
+        source_options = ["Fuente: todas"] + sorted(
+            frame["source_type"].dropna().unique(), key=str.casefold
+        )
+        selected_source = st.selectbox(
+            "Fuente",
+            source_options,
+            label_visibility="collapsed",
+            key="processed_base_source",
+        )
+
+    filtered = frame
+    if query.strip():
+        filtered = filtered[
+            filtered["file_name"].str.contains(query.strip(), case=False, regex=False)
+        ]
+    if selected_source != "Fuente: todas":
+        filtered = filtered[filtered["source_type"] == selected_source]
+
+    st.markdown(
+        render_html_table(
+            filtered,
+            [
+                ("file_name", "Archivo"),
+                ("source_type", "Fuente"),
+                ("file_type", "Tipo"),
+                ("document_date", "Fecha"),
+                ("status", "Estado"),
+                ("evidence_count", "Evidencias"),
+            ],
+            "No hay documentos con los filtros actuales.",
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="raw-footnote">{len(filtered)} de {len(frame)} documentos '
+        "publicados en el snapshot vigente.</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _render_read_model_table(rows: list[dict[str, Any]], empty_message: str) -> None:
@@ -1152,6 +1279,23 @@ def load_demo_data() -> dict[str, pd.DataFrame]:
     return data
 
 
+@st.cache_data(show_spinner=False)
+def load_live_supabase_dashboard_data() -> dict[str, pd.DataFrame]:
+    """Igual que load_demo_data pero calculado en vivo desde Supabase.
+
+    No depende de archivos commiteados: cada vez que se limpia el cache
+    (por ejemplo, justo despues de procesar un documento nuevo) se vuelve a
+    calcular con el estado actual de la base de datos.
+    """
+    from app.dashboard_data_builder import build_live_dashboard_data_from_supabase
+
+    try:
+        return build_live_dashboard_data_from_supabase()
+    except Exception as exc:
+        st.warning(f"No fue posible cargar datos en vivo desde Supabase: {exc}")
+        return {Path(name).stem: pd.DataFrame() for name in DEMO_FILES}
+
+
 def explode_list_column(dataframe: pd.DataFrame, column: str) -> pd.DataFrame:
     """Expande una columna con listas serializadas conservando las demás columnas."""
     if column not in dataframe.columns:
@@ -1229,88 +1373,6 @@ def _options(records: pd.DataFrame, column: str, is_list: bool = False) -> list[
 
 
 def _render_filters(records: pd.DataFrame) -> dict[str, list[str]]:
-    # Definir rutas de archivos requeridos
-    from app.config import STRUCTURED_DATA_DIR, DATA_DIR
-    document_texts_csv = STRUCTURED_DATA_DIR / "document_texts.csv"
-    structured_documents_csv = STRUCTURED_DATA_DIR / "structured_documents.csv"
-    
-    st.sidebar.markdown("### 🛠️ Carga y procesamiento de datos")
-    st.sidebar.caption("Sigue los pasos en orden para cargar tus documentos:")
-    
-    # Paso 1: Build Dataset (extraer texto de PDFs/Excels)
-    if not document_texts_csv.exists():
-        st.sidebar.warning(f"⚠️ Paso 1 incompleto: falta {document_texts_csv.name}")
-        st.sidebar.info("Coloca tus PDFs y Excels en la carpeta 'data/', luego ejecuta:")
-        if st.sidebar.button("1️⃣ Extraer texto de documentos", key="run_build_dataset_button"):
-            with st.spinner("Extrayendo texto de PDFs y Excels..."):
-                try:
-                    project_root = str(Path(__file__).parent.parent)
-                    env = os.environ.copy()
-                    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-                    result = subprocess.run(
-                        [sys.executable, str(Path(__file__).parent / "build_dataset.py")],
-                        capture_output=True,
-                        text=True,
-                        cwd=project_root,
-                        env=env,
-                        check=True,
-                    )
-                    st.sidebar.success("✅ Texto extraído exitosamente!")
-                    st.sidebar.code(result.stdout)
-                except subprocess.CalledProcessError as e:
-                    st.sidebar.error(f"❌ Error al extraer texto: {e.stderr}")
-    else:
-        st.sidebar.success("✅ Paso 1 completado: texto extraído")
-    
-    # Paso 2: LLM Extraction (generar structured_documents.csv)
-    if document_texts_csv.exists() and not structured_documents_csv.exists():
-        st.sidebar.warning(f"⚠️ Paso 2 incompleto: falta {structured_documents_csv.name}")
-        st.sidebar.info("Ahora usa el LLM para estructurar los datos (necesitas API key):")
-        if st.sidebar.button("2️⃣ Extraer datos con LLM", key="run_llm_extract_button"):
-            with st.spinner("Ejecutando extracción con LLM..."):
-                try:
-                    project_root = str(Path(__file__).parent.parent)
-                    env = os.environ.copy()
-                    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-                    result = subprocess.run(
-                        [sys.executable, str(Path(__file__).parent / "llm_extract.py")],
-                        capture_output=True,
-                        text=True,
-                        cwd=project_root,
-                        env=env,
-                        check=True,
-                    )
-                    st.sidebar.success("✅ Extracción con LLM completada!")
-                    st.sidebar.code(result.stdout)
-                except subprocess.CalledProcessError as e:
-                    st.sidebar.error(f"❌ Error en la extracción con LLM: {e.stderr}")
-    elif structured_documents_csv.exists():
-        st.sidebar.success("✅ Paso 2 completado: datos estructurados listos")
-    
-    # Paso 3: Generar datos del dashboard
-    if st.sidebar.button("3️⃣ Generar datos del dashboard", key="load_docs_button"):
-        if not structured_documents_csv.exists():
-            st.sidebar.error("❌ Primero completa los pasos 1 y 2!")
-        else:
-            with st.spinner("Generando datos del dashboard..."):
-                try:
-                    project_root = str(Path(__file__).parent.parent)
-                    env = os.environ.copy()
-                    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-                    result = subprocess.run(
-                        [sys.executable, str(Path(__file__).parent / "dashboard_data_builder.py")],
-                        capture_output=True,
-                        text=True,
-                        cwd=project_root,
-                        env=env,
-                        check=True,
-                    )
-                    st.sidebar.success("✅ Datos generados exitosamente! Actualiza la página para verlos.")
-                    st.sidebar.code(result.stdout)
-                except subprocess.CalledProcessError as e:
-                    st.sidebar.error(f"❌ Error al generar datos: {e.stderr}")
-    
-    st.sidebar.markdown("---")
     st.sidebar.markdown("### Filtros")
     st.sidebar.caption("Los filtros se aplican a todas las vistas analíticas.")
     labels = {
@@ -1591,7 +1653,7 @@ def _render_signals(records: pd.DataFrame) -> None:
                     legend={"orientation": "h", "yanchor": "top", "y": -.22, "xanchor": "center", "x": .5, "title": None, "font": {"size": 9}},
                     hoverlabel={"bgcolor": "white", "font_size": 11, "font_color": "#31333F"},
                 )
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key="signals_scatter_plot")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"signals_scatter_plot_{next(_SIGNALS_RENDER_COUNTER)}")
     with right:
         _render_signal_method_card()
     render_section_title("Top señales priorizadas")
@@ -2198,47 +2260,50 @@ def _render_pmge_policy_alignment(
 
 def _render_strategic_alignment(data: dict[str, pd.DataFrame]) -> None:
     st.markdown("## Alineación estratégica")
-
-    st.markdown("### Vigilancia documental × Matriz de políticas")
-    _render_document_policy_alignment(
-        data.get(
-            "dashboard_document_policy_alignment",
-            pd.DataFrame(),
-        ),
-        key_prefix="main_doc_align",
-    )
-
-    st.markdown("### PMGE / Agenda × Matriz de políticas")
-    _render_pmge_policy_alignment(
-        data.get(
-            "dashboard_pmge_policy_alignment",
-            pd.DataFrame(),
-        ),
-        key_prefix="main_pmge_align",
-    )
+    subtabs = st.tabs([
+        "Vigilancia documental × Matriz de políticas",
+        "PMGE / Agenda × Matriz de políticas",
+    ])
+    with subtabs[0]:
+        _render_document_policy_alignment(
+            data.get(
+                "dashboard_document_policy_alignment",
+                pd.DataFrame(),
+            ),
+            key_prefix="main_doc_align",
+        )
+    with subtabs[1]:
+        _render_pmge_policy_alignment(
+            data.get(
+                "dashboard_pmge_policy_alignment",
+                pd.DataFrame(),
+            ),
+            key_prefix="main_pmge_align",
+        )
 
 
 def _render_document_upload() -> None:
-    from app.config import DATA_DIR, STRUCTURED_DATA_DIR
-    import subprocess
-    import sys
-    from pathlib import Path
-    import os
-    import html
+    """Carga real a Supabase (Storage + Gemini + Postgres) y refresco de demo_data.
 
-    # --- CSS for the upload section ---
+    Reemplaza el flujo legacy basado en archivos locales (build_dataset.py +
+    llm_extract.py + dashboard_data_builder.py leyendo structured_documents.csv),
+    que quedaba desconectado de Supabase y podia sobreescribir demo_data con
+    datos viejos/duplicados. Ahora sube y analiza igual que el modo Supabase, y
+    el paso final reconstruye demo_data desde lo ya persistido (sin llamar Gemini).
+    """
     st.markdown("""
     <style>
     .upload-header {
-        background: #1F2937;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: 1.5rem 2rem;
         margin-bottom: 1.5rem;
-        color: white !important;
-        border-left: 4px solid #3B82F6;
+        color: var(--text) !important;
+        border-left: 4px solid var(--accent);
     }
-    .upload-header h2 { color: white !important; margin: 0 0 .3rem !important; font-size: 1.15rem !important; font-weight: 600; }
-    .upload-header p { color: rgba(255,255,255,.80) !important; margin: 0 !important; font-size: .85rem !important; }
+    .upload-header h2 { color: var(--text) !important; margin: 0 0 .3rem !important; font-size: 1.15rem !important; font-weight: 600; }
+    .upload-header p { color: var(--muted) !important; margin: 0 !important; font-size: .85rem !important; }
     .step-container {
         border: 1px solid var(--border);
         border-radius: 8px;
@@ -2264,282 +2329,169 @@ def _render_document_upload() -> None:
     .step-number.done { background: #D1FAE5; color: #065F46; }
     .step-title { font-weight: 600; font-size: .95rem; color: var(--text); }
     .step-desc { color: var(--muted); font-size: .80rem; margin-left: 2.5rem; }
-    .file-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-        gap: .75rem;
-        margin-top: 1rem;
-    }
-    .file-card {
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: .75rem;
-        background: var(--bg-card);
-        display: flex;
-        align-items: center;
-        gap: .65rem;
-    }
-    .file-icon {
-        width: 32px; height: 32px;
-        border-radius: 4px;
-        display: flex; align-items: center; justify-content: center;
-        font-size: .70rem; font-weight: bold; flex-shrink: 0;
-    }
-    .file-icon.pdf { background: #FEE2E2; color: #B91C1C; }
-    .file-icon.excel { background: #D1FAE5; color: #065F46; }
-    .file-info { overflow: hidden; }
-    .file-name {
-        font-size: .75rem;
-        font-weight: 600;
-        color: var(--text);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 160px;
-    }
-    .file-size { font-size: .65rem; color: var(--muted); }
-    .file-count-banner {
-        display: inline-flex;
-        align-items: center;
-        background: var(--tag-bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: .25rem .75rem;
-        font-size: .75rem;
-        font-weight: 600;
-        color: var(--text);
-        margin-top: .5rem;
-    }
     </style>
     """, unsafe_allow_html=True)
 
-    # --- Header ---
     st.markdown("""
     <div class="upload-header">
         <h2>Centro de carga y procesamiento documental</h2>
-        <p>Sube documentos, extrae su contenido y genera los datos analíticos del dashboard siguiendo el flujo guiado.</p>
+        <p>Sube tus documentos y el dashboard se actualiza automáticamente con la información nueva.</p>
     </div>
     """, unsafe_allow_html=True)
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    document_texts_csv = STRUCTURED_DATA_DIR / "document_texts.csv"
-    structured_documents_csv = STRUCTURED_DATA_DIR / "structured_documents.csv"
+    if "demo_upload_processed" not in st.session_state:
+        st.session_state.demo_upload_processed = False
+    if "demo_upload_reset_counter" not in st.session_state:
+        st.session_state.demo_upload_reset_counter = 0
 
-    # Determine step statuses
-    existing_files = sorted(
-        list(DATA_DIR.glob("*.pdf")) + list(DATA_DIR.glob("*.xls")) + list(DATA_DIR.glob("*.xlsx")),
-        key=lambda p: p.name.lower()
-    )
-    has_files = len(existing_files) > 0
-    has_text = document_texts_csv.exists()
-    has_structured = structured_documents_csv.exists()
-
-    # ─── STEP 1: Upload files ───
-    s1_status = "done" if has_files else "ready"
+    # ─── Paso 1: seleccionar documentos ───
+    s1_status = "done" if st.session_state.demo_upload_processed else "ready"
     st.markdown(f"""
     <div class="step-container">
         <div class="step-header">
-            <div class="step-number {s1_status}">{"✓" if has_files else "1"}</div>
-            <span class="step-title">Paso 1: Subir documentos</span>
+            <div class="step-number {s1_status}">{"✓" if st.session_state.demo_upload_processed else "1"}</div>
+            <span class="step-title">Paso 1: Seleccionar documentos</span>
         </div>
-        <div class="step-desc">Selecciona archivos PDF, XLS o XLSX desde tu equipo para añadirlos al repositorio local.</div>
+        <div class="step-desc">Selecciona archivos PDF, XLS o XLSX para analizar.</div>
     </div>
     """, unsafe_allow_html=True)
 
+    source_type_value = st.selectbox(
+        "Tipo de fuente",
+        options=list(PUBLIC_UPLOAD_SOURCE_LABELS),
+        format_func=lambda value: PUBLIC_UPLOAD_SOURCE_LABELS[value],
+        key="demo_upload_source_type",
+    )
     uploaded_files = st.file_uploader(
-        "Seleccionar archivos",
-        type=["pdf", "xls", "xlsx"],
+        "Archivos",
+        type=list(PUBLIC_UPLOAD_TYPES),
         accept_multiple_files=True,
-        key="document_uploader_tab",
+        key=f"demo_document_uploader_{st.session_state.demo_upload_reset_counter}",
         label_visibility="collapsed",
     )
 
+    # ─── Paso 2: analizar documentos ───
     if uploaded_files:
-        saved_count = 0
-        for uploaded_file in uploaded_files:
-            save_path = DATA_DIR / uploaded_file.name
-            with open(save_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            saved_count += 1
-        st.success(f"{saved_count} archivo(s) guardado(s) exitosamente.")
-        # Refresh file list
-        existing_files = sorted(
-            list(DATA_DIR.glob("*.pdf")) + list(DATA_DIR.glob("*.xls")) + list(DATA_DIR.glob("*.xlsx")),
-            key=lambda p: p.name.lower()
-        )
-        has_files = len(existing_files) > 0
+        st.markdown("<br>", unsafe_allow_html=True)
+        s2_status = "done" if st.session_state.demo_upload_processed else "ready"
+        st.markdown(f"""
+        <div class="step-container">
+            <div class="step-header">
+                <div class="step-number {s2_status}">{"✓" if st.session_state.demo_upload_processed else "2"}</div>
+                <span class="step-title">Paso 2: Analizar documentos</span>
+            </div>
+            <div class="step-desc">Lee cada archivo, identifica la información clave y la agrega al dashboard.</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Show existing files as cards
-    if existing_files:
-        def _fmt_size(size_bytes: int) -> str:
-            if size_bytes < 1024: return f"{size_bytes} B"
-            if size_bytes < 1024 * 1024: return f"{size_bytes / 1024:.1f} KB"
-            return f"{size_bytes / (1024 * 1024):.1f} MB"
-
-        def _file_icon_class(name: str) -> str:
-            return "pdf" if name.lower().endswith(".pdf") else "excel"
-
-        def _file_icon_text(name: str) -> str:
-            return "PDF" if name.lower().endswith(".pdf") else "XLS"
-
-        st.markdown(
-            f'<div class="file-count-banner">{len(existing_files)} documento(s) en el repositorio local</div>',
-            unsafe_allow_html=True,
+        run_process = st.button(
+            "Analizar documentos",
+            key="demo_upload_process_button",
+            type="primary" if not st.session_state.demo_upload_processed else "secondary",
         )
 
-        cards_html = '<div class="file-grid">'
-        for fp in existing_files:
-            icon_cls = _file_icon_class(fp.name)
-            icon_text = _file_icon_text(fp.name)
-            size_str = _fmt_size(fp.stat().st_size)
-            safe_name = html.escape(fp.name)
-            cards_html += f"""
-            <div class="file-card">
-                <div class="file-icon {icon_cls}">{icon_text}</div>
-                <div class="file-info">
-                    <div class="file-name" title="{safe_name}">{safe_name}</div>
-                    <div class="file-size">{size_str}</div>
-                </div>
-            </div>"""
-        cards_html += '</div>'
-        st.markdown(cards_html, unsafe_allow_html=True)
-    else:
-        st.info("No hay archivos en el repositorio local. Por favor, sube documentos para continuar.")
+        if run_process:
+            from app.core.settings import load_settings
+            from app.documents.models import DocumentStatus
+            from run_manual_processing import find_existing_document, reset_failed_duplicate
 
-    # ─── STEP 2: Extract text (Progressive Disclosure) ───
-    if has_files:
-        st.markdown("<br>", unsafe_allow_html=True)
-        s2_status = "done" if has_text else "ready"
-        st.markdown(f"""
-        <div class="step-container">
-            <div class="step-header">
-                <div class="step-number {s2_status}">{"✓" if has_text else "2"}</div>
-                <span class="step-title">Paso 2: Extraer texto de documentos</span>
-            </div>
-            <div class="step-desc">Convierte los documentos a formato de texto plano para el procesamiento posterior.</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        col_btn2, col_status2 = st.columns([1, 2])
-        with col_btn2:
-            run_extract = st.button(
-                "Ejecutar extracción de texto",
-                key="extract_text_tab",
-                type="primary" if not has_text else "secondary",
-            )
-        with col_status2:
-            if has_text:
-                st.success("Texto extraído correctamente.")
-
-        if run_extract:
-            with st.spinner("Procesando extracción de texto..."):
+            workflow = build_manual_processing_workflow()
+            settings = load_settings()
+            metadata = public_upload_metadata("dashboard_demo", smoke=False)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            success_count = 0
+            already_processed_count = 0
+            for index, uploaded_file in enumerate(uploaded_files):
+                status_text.text(f"Procesando {uploaded_file.name} ({index + 1}/{len(uploaded_files)})...")
+                file_bytes = uploaded_file.getvalue()
+                source_type = SourceType(source_type_value)
                 try:
-                    project_root = str(Path(__file__).parent.parent)
-                    env = os.environ.copy()
-                    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-                    result = subprocess.run(
-                        [sys.executable, str(Path(__file__).parent / "build_dataset.py")],
-                        capture_output=True, text=True, cwd=project_root, env=env, check=True,
-                    )
-                    st.success("Extracción de texto completada exitosamente.")
-                    with st.expander("Ver registro de ejecución", expanded=False):
-                        st.code(result.stdout)
-                    has_text = True
-                except subprocess.CalledProcessError as e:
-                    st.error("Error durante la extracción de texto.")
-                    with st.expander("Detalles del error", expanded=True):
-                        st.code(e.stderr)
+                    try:
+                        result = workflow.run(
+                            file_name=uploaded_file.name,
+                            file_bytes=file_bytes,
+                            source_type=source_type,
+                            metadata=metadata,
+                            content_type=upload_content_type(uploaded_file.name),
+                        )
+                    except ManualDocumentProcessingWorkflowError as exc:
+                        if exc.stage != "upload" or "duplicado" not in str(exc.original_error).casefold():
+                            raise
+                        # El archivo ya existe (mismo contenido). Revisamos su estado
+                        # real para decidir el mensaje correcto en vez de asumir que
+                        # se puede reintentar siempre.
+                        existing = find_existing_document(file_bytes=file_bytes, settings=settings)
+                        if existing is not None and existing.status == DocumentStatus.PROCESSED:
+                            already_processed_count += 1
+                            st.info(
+                                f"ℹ️ {uploaded_file.name}: ya estaba analizado anteriormente, "
+                                "no hace falta subirlo de nuevo."
+                            )
+                            continue
+                        if existing is None or existing.status != DocumentStatus.FAILED:
+                            st.warning(
+                                f"⏳ {uploaded_file.name}: ya se está procesando (o quedó a medias en "
+                                "otro intento). Espera un momento y vuelve a intentar."
+                            )
+                            continue
+                        # Quedo "failed" en un intento previo (por ejemplo, cuota
+                        # agotada) -> lo reiniciamos y reintentamos una sola vez.
+                        reset_document = reset_failed_duplicate(
+                            file_name=uploaded_file.name,
+                            file_bytes=file_bytes,
+                            source_type=source_type,
+                            settings=settings,
+                        )
+                        if reset_document is None:
+                            raise
+                        result = workflow.run(
+                            file_name=uploaded_file.name,
+                            file_bytes=file_bytes,
+                            source_type=source_type,
+                            metadata=metadata,
+                            content_type=upload_content_type(uploaded_file.name),
+                            reuse_uploaded_duplicate=True,
+                        )
+                        st.caption(f"↻ {uploaded_file.name}: tuvo un problema antes; se reintentó y funcionó.")
+                    success_count += 1
+                    st.caption(f"✓ {uploaded_file.name}: procesado correctamente (ID: {result.document.id}).")
+                except ManualDocumentProcessingWorkflowError as exc:
+                    st.error(f"❌ {uploaded_file.name}: no se pudo procesar. Intenta de nuevo en un momento.")
+                    with st.expander("Detalle técnico"):
+                        st.caption(f"Etapa: {exc.stage} — {exc.original_error}")
+                except Exception as exc:
+                    st.error(f"❌ {uploaded_file.name}: ocurrió un problema inesperado al procesarlo.")
+                    with st.expander("Detalle técnico"):
+                        st.caption(str(exc))
+                progress_bar.progress((index + 1) / len(uploaded_files))
 
-    # ─── STEP 3: LLM extraction (Progressive Disclosure) ───
-    if has_text:
-        st.markdown("<br>", unsafe_allow_html=True)
-        s3_status = "done" if has_structured else "ready"
-        st.markdown(f"""
-        <div class="step-container">
-            <div class="step-header">
-                <div class="step-number {s3_status}">{"✓" if has_structured else "3"}</div>
-                <span class="step-title">Paso 3: Extraer datos estructurados mediante IA</span>
-            </div>
-            <div class="step-desc">Utiliza modelos de lenguaje para estructurar la información clave extraída. Requiere clave API configurada.</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        col_btn3, col_status3 = st.columns([1, 2])
-        with col_btn3:
-            run_llm = st.button(
-                "Ejecutar extracción estructurada",
-                key="extract_llm_tab",
-                type="primary" if not has_structured else "secondary",
-            )
-        with col_status3:
-            if has_structured:
-                st.success("Datos estructurados generados correctamente.")
-
-        if run_llm:
-            with st.spinner("Ejecutando modelos de IA. Este proceso puede tomar varios minutos..."):
+            if success_count > 0 or already_processed_count > 0:
+                st.session_state.demo_upload_processed = True
+                st.session_state.demo_upload_reset_counter += 1
+            if success_count > 0:
                 try:
-                    project_root = str(Path(__file__).parent.parent)
-                    env = os.environ.copy()
-                    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-                    result = subprocess.run(
-                        [sys.executable, str(Path(__file__).parent / "llm_extract.py")],
-                        capture_output=True, text=True, cwd=project_root, env=env, check=True,
+                    with st.spinner("Actualizando dashboard con los documentos procesados..."):
+                        from app.dashboard_data_builder import build_dashboard_data_from_supabase
+                        build_dashboard_data_from_supabase()
+                    st.cache_data.clear()
+                    summary = f"{success_count} documento(s) nuevo(s) reflejados en el dashboard."
+                    if already_processed_count > 0:
+                        summary += f" {already_processed_count} ya estaban analizados antes."
+                    st.success(f"{summary} Navega a las otras pestañas para verlos.")
+                except Exception:
+                    st.warning(
+                        f"{success_count} documento(s) se guardaron correctamente, pero no se pudo "
+                        "actualizar el dashboard automáticamente. Usa el botón de abajo para intentarlo de nuevo."
                     )
-                    st.success("Extracción estructurada completada.")
-                    with st.expander("Ver registro de ejecución", expanded=False):
-                        st.code(result.stdout)
-                    has_structured = True
-                except subprocess.CalledProcessError as e:
-                    st.error("Error durante la ejecución del modelo de IA.")
-                    with st.expander("Detalles del error", expanded=True):
-                        st.code(e.stderr)
+            elif already_processed_count > 0:
+                st.info("Todos los documentos seleccionados ya estaban analizados; no hay nada nuevo que agregar.")
 
-    # ─── STEP 4: Generate dashboard data (Progressive Disclosure) ───
-    if has_structured:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(f"""
-        <div class="step-container">
-            <div class="step-header">
-                <div class="step-number ready">4</div>
-                <span class="step-title">Paso 4: Generar datos analíticos del Dashboard</span>
-            </div>
-            <div class="step-desc">Construye los cruces, tablas y visualizaciones para poblar el resto de las pestañas.</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        col_btn4, col_status4 = st.columns([1, 2])
-        with col_btn4:
-            run_dashboard = st.button(
-                "Generar vista de Dashboard",
-                key="generate_dashboard_tab",
-                type="primary",
-            )
-
-        if run_dashboard:
-            with st.spinner("Construyendo modelos de datos para el dashboard..."):
-                try:
-                    project_root = str(Path(__file__).parent.parent)
-                    env = os.environ.copy()
-                    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-                    result = subprocess.run(
-                        [sys.executable, str(Path(__file__).parent / "dashboard_data_builder.py")],
-                        capture_output=True, text=True, cwd=project_root, env=env, check=True,
-                    )
-                    st.success("Datos analíticos generados exitosamente. Puede navegar a las otras pestañas para visualizar los resultados.")
-                    with st.expander("Ver registro de ejecución", expanded=False):
-                        st.code(result.stdout)
-                except subprocess.CalledProcessError as e:
-                    st.error("Error al generar los modelos de datos.")
-                    with st.expander("Detalles del error", expanded=True):
-                        st.code(e.stderr)
-
-    # ─── Utility: clear cache ───
+    # ─── Utilidad: forzar actualización ───
     st.markdown("---")
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        if st.button("🔄 Limpiar caché", key="clear_cache_button"):
-            st.cache_data.clear()
-            st.success("✅ Caché limpiada! Actualiza la página.")
+    if st.button("🔄 Actualizar dashboard", key="clear_cache_button"):
+        st.cache_data.clear()
+        st.success("✅ Dashboard actualizado.")
 
 
 def _render_dashboard_builder_button(filtered: pd.DataFrame) -> None:
@@ -2575,26 +2527,17 @@ def main() -> None:
     st.title("Vigilancia Tecnológica — PMGE 2026-2030 / Agenda ANE 2027-2028")
     st.caption("Insumo técnico para formulación de agenda regulatoria · señales derivadas de fuentes documentales externas e institucionales")
     if dashboard_data_source() == DASHBOARD_DATA_SOURCE_SUPABASE:
-        try:
-            service = build_supabase_dashboard_service()
-            model = service.get_published_dashboard()
-            render_supabase_dashboard(model, service)
-        except NoPublishedAnalysisRunError:
-            # No hay snapshot publicado: mostrar solo la pestaña de carga
-            st.info(
-                "No hay una publicación vigente. "
-                "Sube y procesa documentos para generar el primer Snapshot del dashboard."
-            )
-            _render_supabase_document_upload()
-        except IncompletePublishedRunError as exc:
-            st.warning(str(exc))
-            _render_supabase_document_upload()
-        return
+        data = load_live_supabase_dashboard_data()
+    else:
+        data = load_demo_data()
 
-    data = load_demo_data()
     records = data.get("dashboard_records", pd.DataFrame())
     if records.empty:
-        st.warning("No hay registros procesados disponibles en demo_data.")
+        st.info(
+            "Todavía no hay documentos de vigilancia procesados. "
+            "Sube y procesa documentos para generar el panorama."
+        )
+        _render_document_upload()
         return
     filters = _render_filters(records)
     filtered = apply_global_filters(records, filters)
@@ -2602,53 +2545,28 @@ def main() -> None:
         render_metric_card("Registros visibles", len(filtered)),
         unsafe_allow_html=True,
     )
-    # Removed _render_dashboard_builder_button(filtered) as requested by user
     tabs = st.tabs([
+        "Carga de documentos",
         "Panorama estratégico",
+        "Señales regulatorias",
         "Inteligencia regulatoria",
-        "Mapa temático regulatorio",
-        "Tendencias regulatorias explicadas",
-        "Señales emergentes y oportunidades",
         "Cruces analíticos",
         "Alineación estratégica",
-        "Vigilancia documental × Matriz de políticas",
-        "PMGE / Agenda × Matriz de políticas",
         "Base procesada",
     ])
-
     with tabs[0]:
-        _render_panorama(filtered)
-
+        _render_document_upload()
     with tabs[1]:
-        st.markdown("## Inteligencia regulatoria")
-        st.caption("Inteligencia regulatoria: organización y análisis de tendencias.")
-
+        _render_panorama(filtered)
     with tabs[2]:
-        st.markdown("### Mapa temático regulatorio")
-        st.caption("Organiza los hallazgos del corpus en temas macro, subtemas, debates regulatorios e implicaciones para la Agenda ANE.")
-        _render_regulatory_map(filtered)
-
-    with tabs[3]:
-        st.markdown("### Tendencias regulatorias explicadas")
-        st.caption("Traduce los temas tecnológicos detectados en tendencias regulatorias comprensibles, indicando qué está cambiando, por qué importa y qué podría implicar para la ANE.")
-        _render_regulatory_trends(filtered)
-
-    with tabs[4]:
         _render_signals(filtered)
-
-    with tabs[5]:
+    with tabs[3]:
+        _render_regulatory_intelligence(filtered)
+    with tabs[4]:
         _render_crosses(filtered)
-
-    with tabs[6]:
+    with tabs[5]:
         _render_strategic_alignment(data)
-
-    with tabs[7]:
-        _render_document_policy_alignment(data.get("dashboard_document_policy_alignment", pd.DataFrame()), key_prefix="tab_doc_align")
-
-    with tabs[8]:
-        _render_pmge_policy_alignment(data.get("dashboard_pmge_policy_alignment", pd.DataFrame()), key_prefix="tab_pmge_align")
-
-    with tabs[9]:
+    with tabs[6]:
         _render_raw_data(filtered)
 
 

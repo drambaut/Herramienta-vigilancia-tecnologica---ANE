@@ -127,10 +127,22 @@ def _normalize_with_schema(value, schema: dict[str, Any]):
         schema_type = next((item for item in schema_type if item != "null"), None)
     if schema_type == "object" and isinstance(value, dict):
         properties = schema.get("properties", {})
-        return {
-            key: _normalize_with_schema(child, properties.get(key, {}))
-            for key, child in value.items()
-        }
+        required = set(schema.get("required", []))
+        normalized: dict[str, Any] = {}
+        for key, child in value.items():
+            child_schema = properties.get(key, {})
+            normalized_child = _normalize_with_schema(child, child_schema)
+            if (
+                key not in required
+                and normalized_child == ""
+                and child_schema.get("type") == "string"
+                and child_schema.get("minLength", 0) >= 1
+            ):
+                # Gemini a veces incluye un campo opcional como cadena vacia en
+                # vez de omitirlo; se descarta para no romper minLength.
+                continue
+            normalized[key] = normalized_child
+        return normalized
     if schema_type == "array" and isinstance(value, list):
         item_schema = schema.get("items", {})
         normalized = [_normalize_with_schema(item, item_schema) for item in value]

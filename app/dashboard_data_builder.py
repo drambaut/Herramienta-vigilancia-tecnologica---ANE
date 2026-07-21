@@ -98,16 +98,22 @@ def _make_record(row: pd.Series) -> dict[str, Any]:
     record.pop("relevancia_agenda_ane")
     return record
 
-def _write_counts(records: pd.DataFrame, column: str, label: str, path: Path, is_list: bool = False) -> None:
+def _compute_counts(records: pd.DataFrame, column: str, label: str, is_list: bool = False) -> pd.DataFrame:
     values = records[column].map(parse_list_field).explode() if is_list else records[column]
-    values.dropna().loc[lambda s: s.astype(str).str.len() > 0].value_counts().rename_axis(label).reset_index(name="count").to_csv(path, index=False, encoding="utf-8-sig")
+    return values.dropna().loc[lambda s: s.astype(str).str.len() > 0].value_counts().rename_axis(label).reset_index(name="count")
 
-def _write_matrix(records: pd.DataFrame, row_col: str, col_col: str, path: Path, row_list: bool = False, col_list: bool = False) -> None:
+def _write_counts(records: pd.DataFrame, column: str, label: str, path: Path, is_list: bool = False) -> None:
+    _compute_counts(records, column, label, is_list).to_csv(path, index=False, encoding="utf-8-sig")
+
+def _compute_matrix(records: pd.DataFrame, row_col: str, col_col: str, row_list: bool = False, col_list: bool = False) -> pd.DataFrame:
     pairs = records[[row_col, col_col]].copy()
     if row_list: pairs = pairs.assign(**{row_col: pairs[row_col].map(parse_list_field)}).explode(row_col)
     if col_list: pairs = pairs.assign(**{col_col: pairs[col_col].map(parse_list_field)}).explode(col_col)
     pairs = pairs.dropna().reset_index(drop=True)
-    pd.crosstab(pairs[row_col], pairs[col_col]).reset_index().to_csv(path, index=False, encoding="utf-8-sig")
+    return pd.crosstab(pairs[row_col], pairs[col_col]).reset_index()
+
+def _write_matrix(records: pd.DataFrame, row_col: str, col_col: str, path: Path, row_list: bool = False, col_list: bool = False) -> None:
+    _compute_matrix(records, row_col, col_col, row_list, col_list).to_csv(path, index=False, encoding="utf-8-sig")
 
 def _unique_join(series: pd.Series, lists: bool = False) -> str:
     values: list[str] = []
@@ -540,8 +546,254 @@ def build_pmge_policy_alignment(projects: pd.DataFrame, activities: pd.DataFrame
 
 def build_dashboard_data() -> dict[str, Any]:
     if not INPUT_CSV.exists(): raise FileNotFoundError(f"No existe {INPUT_CSV}. Primero ejecute: python app/llm_extract.py")
-    STRUCTURED_DATA_DIR.mkdir(parents=True, exist_ok=True); DEMO_DATA_DIR.mkdir(parents=True, exist_ok=True); REFERENCE_DATA_DIR.mkdir(parents=True, exist_ok=True)
     source = pd.read_csv(INPUT_CSV, dtype=str, keep_default_na=False)
+    return _build_dashboard_data_from_source(source)
+
+
+def build_dashboard_data_from_supabase(settings: Any | None = None) -> dict[str, Any]:
+    """Igual que build_dashboard_data pero lee documentos ya procesados en Supabase.
+
+    No hace llamadas a Gemini: reutiliza document_analysis/pmge_projects/policies
+    ya persistidos para documentos con status=processed. La fuente (source_folder)
+    se recupera de outputs/corpus_processing_manifest.csv cuando existe.
+    """
+    from app.core.settings import load_settings
+
+    resolved_settings = settings or load_settings()
+    source = _fetch_supabase_surveillance_source(resolved_settings)
+    policy_activities = _fetch_supabase_policy_matrix_activities_source(resolved_settings)
+    pmge_projects = _fetch_supabase_pmge_projects_source(resolved_settings)
+    return _build_dashboard_data_from_source(
+        source, policy_activities=policy_activities, pmge_projects=pmge_projects
+    )
+
+
+def build_live_dashboard_data_from_supabase(settings: Any | None = None) -> dict[str, pd.DataFrame]:
+    """Igual que build_dashboard_data_from_supabase pero sin escribir a disco.
+
+    Devuelve las mismas tablas (mismas claves que load_demo_data() en
+    app/dashboard.py) calculadas en memoria a partir de Supabase. Pensado para
+    usarse con @st.cache_data: cada carga de pagina refleja el estado actual de
+    Supabase sin depender de archivos commiteados ni de un paso manual de build.
+    """
+    from app.core.settings import load_settings
+
+    resolved_settings = settings or load_settings()
+    source = _fetch_supabase_surveillance_source(resolved_settings)
+    policy_activities = _fetch_supabase_policy_matrix_activities_source(resolved_settings)
+    pmge_projects = _fetch_supabase_pmge_projects_source(resolved_settings)
+
+    records = pd.DataFrame([_make_record(row) for _, row in source.iterrows()])
+    if records.empty:
+        empty_keys = [
+            "dashboard_records", "dashboard_signals", "dashboard_temas_counts",
+            "dashboard_relevancia_counts", "dashboard_tipo_insumo_counts",
+            "dashboard_tecnologias_counts", "dashboard_bandas_counts",
+            "dashboard_tema_fuente_matrix", "dashboard_tema_tecnologia_matrix",
+            "dashboard_banda_tecnologia_matrix", "dashboard_tema_tipo_insumo_matrix",
+            "dashboard_tema_relevancia_matrix", "dashboard_regulatory_map",
+            "dashboard_regulatory_trends", "policy_matrix_activities", "pmge_projects",
+            "dashboard_document_policy_alignment", "dashboard_pmge_policy_alignment",
+        ]
+        return {key: pd.DataFrame() for key in empty_keys}
+    signals = _build_signals(records)
+    regulatory_map = build_regulatory_map(records)
+    regulatory_trends = build_regulatory_trends(records)
+    document_alignment = build_document_policy_alignment(regulatory_trends, records, signals, policy_activities)
+    pmge_alignment = build_pmge_policy_alignment(pmge_projects, policy_activities)
+
+    return {
+        "dashboard_records": records,
+        "dashboard_signals": signals,
+        "dashboard_temas_counts": _compute_counts(records, "tema_estrategico", "tema_estrategico"),
+        "dashboard_relevancia_counts": _compute_counts(records, "relevancia_label", "relevancia_label"),
+        "dashboard_tipo_insumo_counts": _compute_counts(records, "tipo_insumo_agenda", "tipo_insumo_agenda"),
+        "dashboard_tecnologias_counts": _compute_counts(records, "tecnologias", "tecnologia", True),
+        "dashboard_bandas_counts": _compute_counts(records, "bandas_frecuencia", "banda_frecuencia", True),
+        "dashboard_tema_fuente_matrix": _compute_matrix(records, "tema_estrategico", "source_folder"),
+        "dashboard_tema_tecnologia_matrix": _compute_matrix(records, "tema_estrategico", "tecnologias", col_list=True),
+        "dashboard_banda_tecnologia_matrix": _compute_matrix(records, "bandas_frecuencia", "tecnologias", row_list=True, col_list=True),
+        "dashboard_tema_tipo_insumo_matrix": _compute_matrix(records, "tema_estrategico", "tipo_insumo_agenda"),
+        "dashboard_tema_relevancia_matrix": _compute_matrix(records, "tema_estrategico", "relevancia_label"),
+        "dashboard_regulatory_map": regulatory_map,
+        "dashboard_regulatory_trends": regulatory_trends,
+        "policy_matrix_activities": policy_activities,
+        "pmge_projects": pmge_projects,
+        "dashboard_document_policy_alignment": document_alignment,
+        "dashboard_pmge_policy_alignment": pmge_alignment,
+    }
+
+
+SOURCE_COLUMNS = [
+    "document_id", "file_name", "source_folder", "file_type", "tema_principal",
+    "tecnologias", "bandas_frecuencia", "paises", "organizaciones", "actores",
+    "palabras_clave", "relevancia_agenda_ane", "resumen", "justificacion_relevancia",
+]
+MANIFEST_CSV = PROJECT_ROOT / "outputs" / "corpus_processing_manifest.csv"
+
+
+def _load_provider_lookup(manifest_path: Path = MANIFEST_CSV) -> dict[str, str]:
+    """Mapa file_name -> provider (fuente) desde el manifiesto de corpus."""
+    if not manifest_path.exists():
+        return {}
+    manifest = pd.read_csv(manifest_path, dtype=str, keep_default_na=False)
+    if "path" not in manifest.columns or "provider" not in manifest.columns:
+        return {}
+    lookup: dict[str, str] = {}
+    for _, row in manifest.iterrows():
+        name = Path(str(row["path"])).name
+        if name and name not in lookup:
+            lookup[name] = str(row["provider"]).strip()
+    return lookup
+
+
+def _fetch_supabase_surveillance_source(settings: Any | None = None) -> pd.DataFrame:
+    """Reconstruye el CSV fuente legacy a partir de document_analysis en Supabase.
+
+    Un documento = una fila (sin importar cuantas hojas/paginas tenia), porque
+    el workflow nuevo genera un unico document_analysis por documento.
+    """
+    from app.core.settings import load_settings
+    from app.documents.models import SourceType
+    from app.documents.supabase_repository import SupabaseDocumentRepository
+    from app.results.supabase_repository import SupabaseResultRepository
+
+    resolved_settings = settings or load_settings()
+    documents = SupabaseDocumentRepository(settings=resolved_settings).list_processed_documents()
+    surveillance_documents = [
+        document for document in documents if document.source_type == SourceType.SURVEILLANCE
+    ]
+    provider_lookup = _load_provider_lookup()
+    results = SupabaseResultRepository(settings=resolved_settings)
+
+    rows: list[dict[str, Any]] = []
+    for document in surveillance_documents:
+        bundle = results.get_bundle(document.id)
+        if bundle is None or bundle.document_analysis is None:
+            continue
+        analysis = bundle.document_analysis.data
+        topics = analysis.get("preliminary_topics") or []
+        rows.append({
+            "document_id": document.id,
+            "file_name": document.file_name,
+            "source_folder": provider_lookup.get(document.file_name, ""),
+            "file_type": document.file_type,
+            "tema_principal": topics[0] if topics else analysis.get("title", ""),
+            "tecnologias": analysis.get("technologies", []),
+            "bandas_frecuencia": analysis.get("frequency_bands", []),
+            "paises": analysis.get("countries_regions", []),
+            "organizaciones": analysis.get("organizations", []),
+            "actores": analysis.get("actors", []),
+            "palabras_clave": analysis.get("keywords", []),
+            "relevancia_agenda_ane": bundle.document_analysis.confidence or "",
+            "resumen": analysis.get("summary", ""),
+            "justificacion_relevancia": "",
+        })
+    return pd.DataFrame(rows, columns=SOURCE_COLUMNS)
+
+
+def _fetch_supabase_pmge_projects_source(settings: Any | None = None) -> pd.DataFrame:
+    """PMGE_PROJECT_COLUMNS a partir de pmge_projects ya persistidos en Supabase.
+
+    Reemplaza build_pmge_projects() (que parsea un PDF local por regex) cuando
+    el documento institutional_plan ya fue analizado por Gemini y persistido.
+    """
+    from app.core.settings import load_settings
+    from app.documents.models import SourceType
+    from app.documents.supabase_repository import SupabaseDocumentRepository
+    from app.results.supabase_repository import SupabaseResultRepository
+
+    resolved_settings = settings or load_settings()
+    documents = SupabaseDocumentRepository(settings=resolved_settings).list_processed_documents()
+    institutional_documents = [
+        document for document in documents if document.source_type == SourceType.INSTITUTIONAL_PLAN
+    ]
+    results = SupabaseResultRepository(settings=resolved_settings)
+
+    rows: list[dict[str, Any]] = []
+    for document in institutional_documents:
+        bundle = results.get_bundle(document.id)
+        if bundle is None:
+            continue
+        for index, record in enumerate(bundle.pmge_projects, start=1):
+            data = record.data
+            objectives = data.get("objectives") or []
+            activities = data.get("activities") or []
+            expected_outputs = data.get("expected_outputs") or []
+            description = data.get("description", "")
+            project_text = " ".join(
+                [data.get("project_name", ""), description, " ".join(objectives), " ".join(activities)]
+            )
+            rows.append({
+                "project_id": f"PMGE-{document.id[:8]}-{index:03d}",
+                "source_document": document.file_name,
+                "pmge_line": _pmge_line_for_text(project_text),
+                "project_name": data.get("project_name", ""),
+                "project_description": description,
+                "expected_output": "; ".join(expected_outputs),
+                "timeframe": data.get("period") or "",
+                "keywords": _keywords_for_text(project_text),
+            })
+    return pd.DataFrame(rows, columns=PMGE_PROJECT_COLUMNS)
+
+
+def _fetch_supabase_policy_matrix_activities_source(settings: Any | None = None) -> pd.DataFrame:
+    """POLICY_ACTIVITY_COLUMNS a partir de policies/policy_activities en Supabase.
+
+    Reemplaza build_policy_matrix_activities() (que lee un Excel local por
+    nombre de archivo) cuando el documento policy_matrix ya fue analizado por
+    Gemini y persistido. policy_activities enlaza con su policy mediante
+    policy_temporary_id, valido solo dentro del mismo documento/bundle.
+    """
+    from app.core.settings import load_settings
+    from app.documents.models import SourceType
+    from app.documents.supabase_repository import SupabaseDocumentRepository
+    from app.results.supabase_repository import SupabaseResultRepository
+
+    resolved_settings = settings or load_settings()
+    documents = SupabaseDocumentRepository(settings=resolved_settings).list_processed_documents()
+    policy_matrix_documents = [
+        document for document in documents if document.source_type == SourceType.POLICY_MATRIX
+    ]
+    results = SupabaseResultRepository(settings=resolved_settings)
+
+    rows: list[dict[str, Any]] = []
+    for document in policy_matrix_documents:
+        bundle = results.get_bundle(document.id)
+        if bundle is None:
+            continue
+        policies_by_temp_id = {
+            policy.data.get("temporary_id"): policy.data for policy in bundle.policies
+        }
+        for index, activity in enumerate(bundle.policy_activities, start=1):
+            data = activity.data
+            policy = policies_by_temp_id.get(data.get("policy_temporary_id"), {})
+            policy_name = policy.get("policy_name") or "Matriz de politicas publicas"
+            keywords_text = " ".join([
+                policy_name, policy.get("policy_axis") or "",
+                data.get("activity_name", ""), data.get("activity_description", ""),
+            ])
+            rows.append({
+                "activity_id": f"ACT-{document.id[:8]}-{index:03d}",
+                "policy_name": policy_name,
+                "instrument_name": policy.get("instrument_name") or policy_name,
+                "policy_axis": policy.get("policy_axis") or "",
+                "activity_name": data.get("activity_name", ""),
+                "activity_description": data.get("activity_description", ""),
+                "responsible_area": data.get("responsible_area") or "",
+                "execution_period": data.get("execution_period") or "",
+                "keywords": _keywords_for_text(keywords_text),
+            })
+    return pd.DataFrame(rows, columns=POLICY_ACTIVITY_COLUMNS)
+
+
+def _build_dashboard_data_from_source(
+    source: pd.DataFrame,
+    *,
+    policy_activities: pd.DataFrame | None = None,
+    pmge_projects: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    STRUCTURED_DATA_DIR.mkdir(parents=True, exist_ok=True); DEMO_DATA_DIR.mkdir(parents=True, exist_ok=True); REFERENCE_DATA_DIR.mkdir(parents=True, exist_ok=True)
     records = pd.DataFrame([_make_record(row) for _, row in source.iterrows()])
     serializable = records.copy()
     for column in ["tecnologias", "bandas_frecuencia", "paises_regiones", "organizaciones", "actores", "tipo_evento_regulatorio"]:
@@ -555,8 +807,10 @@ def build_dashboard_data() -> dict[str, Any]:
     regulatory_trends = build_regulatory_trends(records)
     regulatory_map.to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_map.csv", index=False, encoding="utf-8-sig")
     regulatory_trends.to_csv(STRUCTURED_DATA_DIR / "dashboard_regulatory_trends.csv", index=False, encoding="utf-8-sig")
-    policy_activities = build_policy_matrix_activities()
-    pmge_projects = build_pmge_projects()
+    if policy_activities is None:
+        policy_activities = build_policy_matrix_activities()
+    if pmge_projects is None:
+        pmge_projects = build_pmge_projects()
     document_alignment = build_document_policy_alignment(regulatory_trends, records, signals, policy_activities)
     pmge_alignment = build_pmge_policy_alignment(pmge_projects, policy_activities)
     policy_activities.to_csv(STRUCTURED_DATA_DIR / "policy_matrix_activities.csv", index=False, encoding="utf-8-sig")

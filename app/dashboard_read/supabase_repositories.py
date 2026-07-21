@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Callable
 
 from app.core.settings import Settings
+from app.corpus_snapshots.snapshot_read_model import SnapshotListItem
 from app.documents.models import Document
 from app.documents.supabase_repository import SupabaseDocumentRepository
 from app.results.models import PersistenceBundle
@@ -81,7 +82,7 @@ class SupabaseSnapshotListRepository:
         self._client = client
         self._client_factory = client_factory
 
-    def get_snapshot_history(self) -> list[dict[str, Any]]:
+    def get_snapshot_history(self) -> list[SnapshotListItem]:
         client = self._client_instance()
         # Traemos todos los snapshots. Idealmente se haria un join con runs
         # pero para mantenerlo simple consultamos ambos
@@ -105,14 +106,16 @@ class SupabaseSnapshotListRepository:
             # lo ideal es contar
             doc_count = client.table("corpus_snapshot_documents").select("document_id", count="exact").eq("snapshot_id", sid).execute().count or 0
             
-            history.append({
-                "snapshot_id": sid,
-                "run_id": run["id"] if run else None,
-                "created_at": snap["created_at"],
-                "published_at": run["published_at"] if run else None,
-                "status": run["status"] if run else "draft",
-                "document_count": doc_count,
-            })
+            history.append(
+                SnapshotListItem(
+                    snapshot_id=sid,
+                    run_id=run["id"] if run else None,
+                    created_at=snap["created_at"],
+                    published_at=run["published_at"] if run else None,
+                    status=run["status"] if run else "draft",
+                    document_count=doc_count,
+                )
+            )
             
         return history
 

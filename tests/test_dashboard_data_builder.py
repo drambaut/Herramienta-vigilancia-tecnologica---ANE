@@ -1,4 +1,5 @@
 """Pruebas de la capa local de datos para la demo."""
+from datetime import UTC, datetime
 from pathlib import Path
 import pandas as pd
 import pytest
@@ -27,6 +28,146 @@ def test_build_dashboard_data_creates_expected_demo_csvs(tmp_path: Path, monkeyp
 def test_missing_input_has_actionable_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(builder, "INPUT_CSV", tmp_path / "missing.csv")
     with pytest.raises(FileNotFoundError, match="python app/llm_extract.py"): builder.build_dashboard_data()
+
+
+def test_load_provider_lookup_maps_file_name_to_provider(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.csv"
+    pd.DataFrame([
+        {"path": r"C:\corpus\Cullen International\report.pdf", "source_type": "surveillance", "provider": "Cullen International"},
+        {"path": r"C:\corpus\GSMA\other.pdf", "source_type": "surveillance", "provider": "GSMA"},
+    ]).to_csv(manifest, index=False)
+    lookup = builder._load_provider_lookup(manifest)
+    assert lookup == {"report.pdf": "Cullen International", "other.pdf": "GSMA"}
+
+
+def test_load_provider_lookup_returns_empty_when_manifest_missing(tmp_path: Path) -> None:
+    assert builder._load_provider_lookup(tmp_path / "missing.csv") == {}
+
+
+def test_fetch_supabase_surveillance_source_maps_one_row_per_document_and_skips_other_types(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.documents.models import Document, DocumentStatus, SourceType
+    from app.results.models import PersistenceBundle, ResultRecord
+
+    surveillance_document = Document(
+        id="doc-1", file_name="reporte.pdf", file_type="pdf", source_type=SourceType.SURVEILLANCE,
+        file_hash="h1", storage_path="p1", document_date=None, status=DocumentStatus.PROCESSED,
+        version=1, replaces_id=None, created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    )
+    institutional_document = Document(
+        id="doc-2", file_name="pmge.pdf", file_type="pdf", source_type=SourceType.INSTITUTIONAL_PLAN,
+        file_hash="h2", storage_path="p2", document_date=None, status=DocumentStatus.PROCESSED,
+        version=1, replaces_id=None, created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    )
+
+    class FakeDocumentRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def list_processed_documents(self):
+            return [surveillance_document, institutional_document]
+
+    analysis_record = ResultRecord(
+        id="rec-1", document_id="doc-1",
+        data={
+            "title": "Reporte", "summary": "Resumen del reporte",
+            "preliminary_topics": ["NTN"], "technologies": ["NTN", "5G"],
+            "frequency_bands": ["6 GHz"], "countries_regions": ["Colombia"],
+            "organizations": ["UIT"], "actors": ["Reguladores"], "keywords": ["satelital"],
+        },
+        prompt_id="document_extraction", prompt_version="v1", contract_name="DocumentExtraction",
+        model_name="gemini", created_at=datetime.now(UTC), canonical_key="k1", confidence="Alta",
+    )
+    bundle = PersistenceBundle(document_id="doc-1", document_analysis=analysis_record)
+
+    class FakeResultRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def get_bundle(self, document_id: str):
+            return bundle if document_id == "doc-1" else None
+
+    import app.documents.supabase_repository as document_repository_module
+    import app.results.supabase_repository as result_repository_module
+    monkeypatch.setattr(document_repository_module, "SupabaseDocumentRepository", FakeDocumentRepository)
+    monkeypatch.setattr(result_repository_module, "SupabaseResultRepository", FakeResultRepository)
+    monkeypatch.setattr(builder, "MANIFEST_CSV", tmp_path / "missing_manifest.csv")
+
+    source = builder._fetch_supabase_surveillance_source(settings=object())
+
+    assert len(source) == 1
+    row = source.iloc[0]
+    assert row["document_id"] == "doc-1"
+    assert row["file_name"] == "reporte.pdf"
+    assert row["tecnologias"] == ["NTN", "5G"]
+    assert row["bandas_frecuencia"] == ["6 GHz"]
+    assert row["relevancia_agenda_ane"] == "Alta"
+    assert row["resumen"] == "Resumen del reporte"
+
+
+def test_fetch_supabase_surveillance_source_includes_previously_processed_documents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regresion: subir un documento nuevo no debe hacer desaparecer los anteriores.
+
+    build_dashboard_data_from_supabase reconstruye demo_data consultando TODOS
+    los documentos processed en Supabase, no solo el ultimo subido. Esta prueba
+    fija ese contrato: dos documentos previamente procesados mas uno nuevo deben
+    aparecer juntos en la fuente reconstruida.
+    """
+    from app.documents.models import Document, DocumentStatus, SourceType
+    from app.results.models import PersistenceBundle, ResultRecord
+
+    def _document(document_id: str, file_name: str) -> Document:
+        return Document(
+            id=document_id, file_name=file_name, file_type="pdf", source_type=SourceType.SURVEILLANCE,
+            file_hash=f"hash-{document_id}", storage_path=f"path-{document_id}", document_date=None,
+            status=DocumentStatus.PROCESSED, version=1, replaces_id=None,
+            created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+        )
+
+    existing_documents = [_document("doc-1", "antiguo1.pdf"), _document("doc-2", "antiguo2.pdf")]
+    newly_uploaded_document = _document("doc-3", "nuevo.pdf")
+
+    class FakeDocumentRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def list_processed_documents(self):
+            # Simula el estado real de Supabase DESPUES de subir un documento
+            # nuevo: los ya procesados siguen ahi, mas el recien agregado.
+            return [*existing_documents, newly_uploaded_document]
+
+    def _bundle(document_id: str) -> PersistenceBundle:
+        analysis = ResultRecord(
+            id=f"rec-{document_id}", document_id=document_id,
+            data={
+                "title": document_id, "summary": f"Resumen {document_id}",
+                "preliminary_topics": ["Seguimiento"], "technologies": [], "frequency_bands": [],
+                "countries_regions": [], "organizations": [], "actors": [], "keywords": [],
+            },
+            prompt_id="document_extraction", prompt_version="v1", contract_name="DocumentExtraction",
+            model_name="gemini", created_at=datetime.now(UTC), canonical_key=f"k-{document_id}", confidence="Media",
+        )
+        return PersistenceBundle(document_id=document_id, document_analysis=analysis)
+
+    class FakeResultRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def get_bundle(self, document_id: str):
+            return _bundle(document_id)
+
+    import app.documents.supabase_repository as document_repository_module
+    import app.results.supabase_repository as result_repository_module
+    monkeypatch.setattr(document_repository_module, "SupabaseDocumentRepository", FakeDocumentRepository)
+    monkeypatch.setattr(result_repository_module, "SupabaseResultRepository", FakeResultRepository)
+    monkeypatch.setattr(builder, "MANIFEST_CSV", tmp_path / "missing_manifest.csv")
+
+    source = builder._fetch_supabase_surveillance_source(settings=object())
+
+    assert sorted(source["file_name"]) == ["antiguo1.pdf", "antiguo2.pdf", "nuevo.pdf"]
 
 
 def test_regulatory_datasets_have_complete_explanations() -> None:
@@ -100,3 +241,129 @@ def test_alignment_outputs_columns_scores_values_and_support_documents() -> None
     assert list(pmge_alignment.columns) == builder.PMGE_POLICY_ALIGNMENT_COLUMNS
     assert pmge_alignment["alignment_score"].between(0, 100).all()
     assert set(pmge_alignment["alignment_level"]).issubset(set(builder.ALLOWED_ALIGNMENT_LEVEL))
+
+
+def test_fetch_supabase_pmge_projects_source_maps_persisted_projects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.documents.models import Document, DocumentStatus, SourceType
+    from app.results.models import PersistenceBundle, ResultRecord
+
+    institutional_document = Document(
+        id="doc-pmge-1", file_name="pmge.pdf", file_type="pdf", source_type=SourceType.INSTITUTIONAL_PLAN,
+        file_hash="h1", storage_path="p1", document_date=None, status=DocumentStatus.PROCESSED,
+        version=1, replaces_id=None, created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    )
+    surveillance_document = Document(
+        id="doc-surv-1", file_name="reporte.pdf", file_type="pdf", source_type=SourceType.SURVEILLANCE,
+        file_hash="h2", storage_path="p2", document_date=None, status=DocumentStatus.PROCESSED,
+        version=1, replaces_id=None, created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    )
+
+    class FakeDocumentRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def list_processed_documents(self):
+            return [institutional_document, surveillance_document]
+
+    project_record = ResultRecord(
+        id="rec-project-1", document_id="doc-pmge-1",
+        data={
+            "project_name": "Hoja de ruta 6 GHz", "description": "Wi-Fi y espectro no licenciado",
+            "objectives": ["Ampliar cobertura"], "activities": ["Consultar industria"],
+            "expected_outputs": ["Hoja de ruta publicada"], "period": "2026-2028",
+        },
+        prompt_id="institutional_plan_extraction", prompt_version="v1",
+        contract_name="InstitutionalPlanExtraction", model_name="gemini",
+        created_at=datetime.now(UTC), canonical_key="k-project-1", confidence="Alta",
+    )
+    bundle = PersistenceBundle(document_id="doc-pmge-1", pmge_projects=[project_record])
+
+    class FakeResultRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def get_bundle(self, document_id: str):
+            return bundle if document_id == "doc-pmge-1" else None
+
+    import app.documents.supabase_repository as document_repository_module
+    import app.results.supabase_repository as result_repository_module
+    monkeypatch.setattr(document_repository_module, "SupabaseDocumentRepository", FakeDocumentRepository)
+    monkeypatch.setattr(result_repository_module, "SupabaseResultRepository", FakeResultRepository)
+
+    source = builder._fetch_supabase_pmge_projects_source(settings=object())
+
+    assert list(source.columns) == builder.PMGE_PROJECT_COLUMNS
+    assert len(source) == 1
+    row = source.iloc[0]
+    assert row["project_name"] == "Hoja de ruta 6 GHz"
+    assert row["source_document"] == "pmge.pdf"
+    assert row["timeframe"] == "2026-2028"
+    assert "Hoja de ruta publicada" in row["expected_output"]
+
+
+def test_fetch_supabase_policy_matrix_activities_source_joins_activity_with_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.documents.models import Document, DocumentStatus, SourceType
+    from app.results.models import PersistenceBundle, ResultRecord
+
+    policy_matrix_document = Document(
+        id="doc-policy-1", file_name="matriz.xlsx", file_type="xlsx", source_type=SourceType.POLICY_MATRIX,
+        file_hash="h3", storage_path="p3", document_date=None, status=DocumentStatus.PROCESSED,
+        version=1, replaces_id=None, created_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+    )
+
+    class FakeDocumentRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def list_processed_documents(self):
+            return [policy_matrix_document]
+
+    policy_record = ResultRecord(
+        id="rec-policy-1", document_id="doc-policy-1",
+        data={
+            "temporary_id": "policy-tmp-1", "policy_name": "Gestión eficiente del espectro",
+            "instrument_name": "Plan estratégico", "policy_axis": "Innovación", "description": "Eje estratégico",
+        },
+        prompt_id="policy_matrix_extraction", prompt_version="v1", contract_name="PolicyMatrixExtraction",
+        model_name="gemini", created_at=datetime.now(UTC), canonical_key="k-policy-1", confidence="Alta",
+    )
+    activity_record = ResultRecord(
+        id="rec-activity-1", document_id="doc-policy-1",
+        data={
+            "policy_temporary_id": "policy-tmp-1", "activity_name": "Modernizar el monitoreo",
+            "activity_description": "Actualizar herramientas de monitoreo del espectro",
+            "responsible_area": "Subdirección técnica", "execution_period": "2026", "commitments": [],
+            "keywords": ["monitoreo"],
+        },
+        prompt_id="policy_matrix_extraction", prompt_version="v1", contract_name="PolicyMatrixExtraction",
+        model_name="gemini", created_at=datetime.now(UTC), canonical_key="k-activity-1", confidence="Alta",
+    )
+    bundle = PersistenceBundle(
+        document_id="doc-policy-1", policies=[policy_record], policy_activities=[activity_record]
+    )
+
+    class FakeResultRepository:
+        def __init__(self, *, settings=None) -> None:
+            pass
+
+        def get_bundle(self, document_id: str):
+            return bundle if document_id == "doc-policy-1" else None
+
+    import app.documents.supabase_repository as document_repository_module
+    import app.results.supabase_repository as result_repository_module
+    monkeypatch.setattr(document_repository_module, "SupabaseDocumentRepository", FakeDocumentRepository)
+    monkeypatch.setattr(result_repository_module, "SupabaseResultRepository", FakeResultRepository)
+
+    source = builder._fetch_supabase_policy_matrix_activities_source(settings=object())
+
+    assert list(source.columns) == builder.POLICY_ACTIVITY_COLUMNS
+    assert len(source) == 1
+    row = source.iloc[0]
+    assert row["policy_name"] == "Gestión eficiente del espectro"
+    assert row["policy_axis"] == "Innovación"
+    assert row["activity_name"] == "Modernizar el monitoreo"
+    assert row["responsible_area"] == "Subdirección técnica"
