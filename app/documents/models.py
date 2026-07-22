@@ -57,6 +57,7 @@ class Document:
     replaces_id: str | None
     created_at: datetime
     updated_at: datetime
+    provider: str | None = None
 
 
 @dataclass(frozen=True)

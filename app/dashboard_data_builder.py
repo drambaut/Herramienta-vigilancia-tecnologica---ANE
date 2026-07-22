@@ -72,6 +72,12 @@ def _infer_input_type(relevance: str, topic: str) -> str:
         if topic == "Disponibilidad de espectro para IMT": return "Ajuste a iniciativa existente"
     return "Seguimiento"
 
+def _extract_year(value: Any) -> str:
+    """Extrae un anio plausible (2000-2029) de una fecha o texto libre."""
+    match = re.search(r"\b(20[0-2][0-9])\b", str(value or ""))
+    return match.group(1) if match else ""
+
+
 def _make_record(row: pd.Series) -> dict[str, Any]:
     technologies = normalize_technologies(row.get("tecnologias", []))
     bands = normalize_bands(row.get("bandas_frecuencia", []))
@@ -84,8 +90,10 @@ def _make_record(row: pd.Series) -> dict[str, Any]:
     evidence = [topic]
     if technologies: evidence.append("tecnologías: " + ", ".join(technologies[:4]))
     if bands: evidence.append("bandas: " + ", ".join(bands[:4]))
+    year = _extract_year(row.get("document_date", "")) or _extract_year(_text(row, "file_name"))
     record: dict[str, Any] = {
         "document_id": _text(row, "document_id"), "file_name": _text(row, "file_name"), "source_folder": _text(row, "source_folder"), "file_type": _text(row, "file_type"),
+        "year": year,
         "tema_estrategico": topic, "linea_pmge": line, "senal_regulatoria": signal, "tecnologias": technologies, "bandas_frecuencia": bands,
         "paises_regiones": parse_list_field(row.get("paises", [])), "organizaciones": parse_list_field(row.get("organizaciones", [])), "actores": parse_list_field(row.get("actores", [])),
         "tipo_evento_regulatorio": infer_tipo_evento_regulatorio(" ".join([signal, _text(row, "resumen"), " ".join(keywords)])), "tipo_insumo_agenda": input_type,
@@ -628,6 +636,7 @@ SOURCE_COLUMNS = [
     "document_id", "file_name", "source_folder", "file_type", "tema_principal",
     "tecnologias", "bandas_frecuencia", "paises", "organizaciones", "actores",
     "palabras_clave", "relevancia_agenda_ane", "resumen", "justificacion_relevancia",
+    "document_date",
 ]
 MANIFEST_CSV = PROJECT_ROOT / "outputs" / "corpus_processing_manifest.csv"
 
@@ -676,7 +685,7 @@ def _fetch_supabase_surveillance_source(settings: Any | None = None) -> pd.DataF
         rows.append({
             "document_id": document.id,
             "file_name": document.file_name,
-            "source_folder": provider_lookup.get(document.file_name, ""),
+            "source_folder": document.provider or provider_lookup.get(document.file_name, ""),
             "file_type": document.file_type,
             "tema_principal": topics[0] if topics else analysis.get("title", ""),
             "tecnologias": analysis.get("technologies", []),
@@ -688,6 +697,7 @@ def _fetch_supabase_surveillance_source(settings: Any | None = None) -> pd.DataF
             "relevancia_agenda_ane": bundle.document_analysis.confidence or "",
             "resumen": analysis.get("summary", ""),
             "justificacion_relevancia": "",
+            "document_date": analysis.get("document_date") or analysis.get("publication_date") or "",
         })
     return pd.DataFrame(rows, columns=SOURCE_COLUMNS)
 

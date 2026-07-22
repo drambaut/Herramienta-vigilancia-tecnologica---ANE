@@ -12,6 +12,28 @@ def test_taxonomy_parses_and_normalizes_variants() -> None:
     assert normalize_bands(["6 GHz superior", "Ka-band"]) == ["upper 6 GHz", "banda Ka"]
     assert infer_tema_estrategico(["NTN"], [], "") == "Conectividad satelital, NTN y D2D"
 
+
+def test_extract_year_prefers_real_date_over_filename() -> None:
+    assert builder._extract_year("2025-03-15") == "2025"
+    assert builder._extract_year("March 2026") == "2026"
+    assert builder._extract_year("") == ""
+    # Con separadores claros si se reconoce como respaldo del nombre del archivo.
+    assert builder._extract_year("Documento-Tendencias-2025.pdf") == "2025"
+    # Sin limite de palabra claro (numero de referencia pegado), no se adivina.
+    assert builder._extract_year("FLSPAR20250003_Enacom_reduces.pdf") == ""
+
+
+def test_make_record_uses_document_date_for_year() -> None:
+    row = pd.Series({
+        "document_id": "1", "file_name": "reporte.pdf", "source_folder": "UIT",
+        "tema_principal": "Consulta 6 GHz", "tecnologias": [], "bandas_frecuencia": [],
+        "paises": [], "organizaciones": [], "actores": [], "palabras_clave": [],
+        "relevancia_agenda_ane": "Media", "resumen": "", "justificacion_relevancia": "",
+        "document_date": "2027-01-10",
+    })
+    record = builder._make_record(row)
+    assert record["year"] == "2027"
+
 def test_build_dashboard_data_creates_expected_demo_csvs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     structured = tmp_path / "outputs" / "structured_data"; demo = tmp_path / "demo_data"; structured.mkdir(parents=True)
     input_csv = structured / "structured_documents.csv"
