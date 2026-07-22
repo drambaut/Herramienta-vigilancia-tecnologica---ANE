@@ -94,6 +94,18 @@ class SupabaseDocumentRepository:
             raise DocumentNotFoundError(f"No existe el documento {document_id}.")
         return _document_from_row(row)
 
+    def update_document_provider(self, document_id: str, provider: str) -> Document:
+        row = self._single(
+            self._table("documents")
+            .update({"provider": provider})
+            .eq("id", document_id)
+            .execute()
+            .data
+        )
+        if row is None:
+            raise DocumentNotFoundError(f"No existe el documento {document_id}.")
+        return _document_from_row(row)
+
     def save_chunk(self, chunk: DocumentChunk) -> DocumentChunk:
         self._require_document(chunk.document_id)
         row = self._insert("document_chunks", _chunk_to_row(chunk))
@@ -252,6 +264,7 @@ def _document_to_row(document: Document) -> dict[str, Any]:
         "replaces_id": document.replaces_id,
         "created_at": document.created_at.isoformat(),
         "updated_at": document.updated_at.isoformat(),
+        "provider": document.provider,
     }
 
 
@@ -269,6 +282,7 @@ def _document_from_row(row: dict[str, Any]) -> Document:
         replaces_id=row.get("replaces_id"),
         created_at=_parse_datetime(row["created_at"]),
         updated_at=_parse_datetime(row["updated_at"]),
+        provider=row.get("provider"),
     )
 
 

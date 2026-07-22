@@ -80,6 +80,7 @@ class DocumentService:
         document_date: date | None = None,
         replaces_id: str | None = None,
         document_id: str | None = None,
+        provider: str | None = None,
     ) -> DocumentRegistration:
         file_hash = self.calculate_sha256(content)
         existing = self._repository.find_document_by_hash(file_hash)
@@ -100,6 +101,7 @@ class DocumentService:
             replaces_id=replaces_id,
             created_at=now,
             updated_at=now,
+            provider=provider,
         )
         saved_document = self._repository.save_document(document)
         job = self._new_job(

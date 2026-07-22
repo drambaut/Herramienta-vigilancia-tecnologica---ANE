@@ -2362,6 +2362,12 @@ def _render_document_upload() -> None:
         format_func=lambda value: PUBLIC_UPLOAD_SOURCE_LABELS[value],
         key="demo_upload_source_type",
     )
+    provider = st.text_input(
+        "Fuente / organización de origen",
+        value="",
+        placeholder="Ej. Cullen International, GSMA, UIT, CRC...",
+        key="demo_upload_provider",
+    )
     uploaded_files = st.file_uploader(
         "Archivos",
         type=list(PUBLIC_UPLOAD_TYPES),
@@ -2397,7 +2403,7 @@ def _render_document_upload() -> None:
 
             workflow = build_manual_processing_workflow()
             settings = load_settings()
-            metadata = public_upload_metadata("dashboard_demo", smoke=False)
+            metadata = public_upload_metadata(provider or "dashboard", smoke=False)
             progress_bar = st.progress(0)
             status_text = st.empty()
             success_count = 0

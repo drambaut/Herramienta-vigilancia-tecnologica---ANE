@@ -98,6 +98,7 @@ class ManualDocumentUploadService:
                 document_date=document_date,
                 replaces_id=replaces_id,
                 document_id=document_id,
+                provider=(metadata or {}).get("provider"),
             )
         except Exception as exc:
             self._storage.delete_source_document(stored.path)
